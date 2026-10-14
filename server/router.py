@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 
 from cf import Cf, CfError
+from hz import Hz, HzError, status_emoji
 from store import Store
 from tg import Bot
 
@@ -94,6 +95,41 @@ class Router:
         self.bot.answer(cb.get("id", ""))
         if data == "menu":
             self._menu(chat, mid)
+        elif data == "hz":
+            self._hz_home(chat, mid)
+        elif data == "hza":
+            self.store.put_json(f"pend:{chat}", {"type": "hz_add_name"}, 600)
+            self._show(chat, mid, "👤 چه اسمی برای اکانت هتزنر بزارم؟",
+                       [[btn("🔙 بازگشت", "hz"), btn("🏠 خانه", "menu")]])
+        elif data == "hzdel":
+            self._hz_del_list(chat, mid)
+        elif data.startswith("hzd:"):
+            self._hz_del_ask(chat, mid, data[4:])
+        elif data.startswith("hzdy:"):
+            self._hz_del_do(chat, mid, data[5:])
+        elif data.startswith("hzm:"):
+            accs = self._hz_accs()
+            try:
+                i = int(data[4:])
+                if 0 <= i < len(accs):
+                    self.store.put("hz_sel", str(i))
+            except (ValueError, IndexError):
+                pass
+            self._hz_home(chat, mid)
+        elif data == "hzaccs":
+            self._hz_accs_menu(chat, mid)
+        elif data.startswith("hzs:"):
+            _, i, pg = data.split(":")
+            self._hz_servers(chat, mid, int(i), int(pg))
+        elif data.startswith("hzsi:"):
+            _, i, sid = data.split(":")
+            self._hz_info(chat, mid, int(i), sid)
+        elif data.startswith("hzsu:"):
+            _, i, sid, step = data.split(":")
+            self._hz_op(chat, mid, int(i), sid, step)
+        elif data.startswith("hzdelok:"):
+            _, i, sid = data.split(":")
+            self._hz_del_server(chat, mid, int(i), sid)
         elif data == "cf":
             self._cf_zones(chat, mid)
         elif data.startswith("cfz:"):
@@ -129,11 +165,12 @@ class Router:
     def _menu(self, chat: int, mid: int = 0) -> None:
         kb = [
             [btn("☁️ کلودفلر", "cf")],
+            [btn("🇩🇪 هتزنر", "hz")],
             [btn("🏠 خانه", "menu")],
         ]
         self._show(chat, mid,
                    f"🤖 نگهبان ابری <b>{VERSION}</b> (روی سرور)\n\n"
-                   "بخش‌ها به‌تدریج اضافه می‌شوند؛ الان DNS کلادفلر کامل است.",
+                   "DNS کلادفلر و هتزنر کامل است؛ بقیه بخش‌ها به‌تدریج می‌آیند.",
                    kb)
 
     # ---------- Cloudflare ----------
@@ -236,5 +273,210 @@ class Router:
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, "✅ رکورد ثبت شد.")
             self._cf_records(chat, 0, pend["zid"], 0)
+        elif pend.get("type") == "hz_add_name":
+            name = text.replace(" ", "")
+            if not name:
+                self.bot.send(chat, "❌ نام معتبر نیست.")
+                return
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "hz_add_token", "name": name}, 600)
+            self.bot.send(chat, "🔑 توکن API هتزنر را بفرستید:")
+        elif pend.get("type") == "hz_add_token":
+            tok = text.strip()
+            try:
+                Hz(tok).all("/servers")
+            except HzError as e:
+                self.bot.send(chat, f"❌ توکن نامعتبر است: {esc(e)}")
+                return
+            accs = self._hz_accs()
+            accs.append({"name": pend.get("name", "hz"), "token": tok})
+            self.store.put_json("hz_accounts", accs)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ اکانت هتزنر اضافه شد.")
+            self._hz_home(chat, 0)
+        elif pend.get("type") == "hz_srv_rename":
+            try:
+                Hz(self._hz_accs()[pend["acc"]]["token"]).call(
+                    f'/servers/{pend["sid"]}', "PUT", {"name": text.strip()})
+                self.bot.send(chat, "✅ نام سرور تغییر کرد.")
+            except (HzError, IndexError, KeyError) as e:
+                self.bot.send(chat, f"❌ نشد: {esc(e)}")
+                return
+            self.store.delete(f"pend:{chat}")
+            self._hz_info(chat, 0, pend["acc"], pend["sid"])
         else:
             self.store.delete(f"pend:{chat}")
+
+    # ---------- Hetzner ----------
+
+    def _hz_accs(self) -> list:
+        accs = self.store.get_json("hz_accounts", [])
+        return accs if isinstance(accs, list) else []
+
+    def _hz_sel(self) -> int:
+        accs = self._hz_accs()
+        try:
+            i = int(self.store.get("hz_sel") or 0)
+            if 0 <= i < len(accs):
+                return i
+        except (ValueError, TypeError):
+            pass
+        return 0
+
+    def _hz_home(self, chat: int, mid: int = 0) -> None:
+        accs = self._hz_accs()
+        if not accs:
+            self._show(chat, mid, "🇩🇪 هتزنر\n\nاکانتی نیست؛ اضافه کن:",
+                       [[btn("➕ افزودن اکانت", "hza")],
+                        [btn("🏠 خانه", "menu")]])
+            return
+        sel = self._hz_sel()
+        kb = []
+        if len(accs) > 1:
+            kb.append([btn(f'{"✅ " if i == sel else "👤 "}{a["name"]}',
+                           f"hzm:{i}") for i, a in enumerate(accs)][:4])
+        try:
+            servers = Hz(accs[sel]["token"]).all("/servers")
+        except HzError as e:
+            self._show(chat, mid, f"❌ {esc(e)}",
+                       [[btn("🏠 خانه", "menu")]])
+            return
+        lines = [f'🇩🇪 هتزنر — «{esc(accs[sel]["name"])}»', ""]
+        if not servers:
+            lines.append("📭 سروری نیست.")
+        for s in servers[:20]:
+            ip = ((s.get("public_net") or {}).get("ipv4") or {}).get("ip", "—")
+            kb.append([btn(f'🌐 {ip}', f'hzsi:{sel}:{s["id"]}'),
+                       btn(f'{status_emoji(s.get("status"))} '
+                           f'{str(s.get("name") or s["id"])[:28]}',
+                           f'hzsi:{sel}:{s["id"]}')])
+        kb.append([btn("🖥 سرورها", f"hzs:{sel}:0"),
+                   btn("👤 اکانت‌ها", "hzaccs")])
+        kb.append([btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _hz_accs_menu(self, chat: int, mid: int = 0) -> None:
+        accs = self._hz_accs()
+        kb = [[btn("➕ افزودن اکانت", "hza")]]
+        if accs:
+            kb.append([btn("🗑 حذف اکانت", "hzdel")])
+        kb.append([btn("🔙 بازگشت", "hz"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "👤 اکانت‌های هتزنر:", kb)
+
+    def _hz_del_list(self, chat: int, mid: int = 0) -> None:
+        accs = self._hz_accs()
+        if not accs:
+            self._show(chat, mid, "📭 اکانتی نیست.",
+                       [[btn("🔙 بازگشت", "hz")]])
+            return
+        kb = [[btn(f'🗑 {a["name"]}', f'hzd:{i}')]
+              for i, a in enumerate(accs)]
+        kb.append([btn("🔙 بازگشت", "hz")])
+        self._show(chat, mid, "🗑 کدام اکانت حذف شود؟", kb)
+
+    def _hz_del_ask(self, chat: int, mid: int, idx: str) -> None:
+        try:
+            name = self._hz_accs()[int(idx)]["name"]
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        self._show(chat, mid, f'⚠️ اکانت «{esc(name)}» حذف شود؟',
+                   [[btn("✅ بله", f"hzdy:{idx}"),
+                     btn("❌ انصراف", "hzdel")]])
+
+    def _hz_del_do(self, chat: int, mid: int, idx: str) -> None:
+        accs = self._hz_accs()
+        try:
+            accs.pop(int(idx))
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        self.store.put_json("hz_accounts", accs)
+        self.bot.send(chat, "✅ اکانت حذف شد.")
+        self._hz_home(chat, 0)
+
+    def _hz_servers(self, chat: int, mid: int, i: int, pg: int) -> None:
+        try:
+            acc = self._hz_accs()[i]
+            servers = Hz(acc["token"]).all("/servers")
+        except (IndexError, HzError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        per, pages = 10, max(1, (len(servers) + 9) // 10)
+        pg = max(0, min(pg, pages - 1))
+        kb = [[btn(f'{status_emoji(s.get("status"))} {s.get("name")}',
+                   f'hzsi:{i}:{s["id"]}')]
+              for s in servers[pg * per:(pg + 1) * per]]
+        if pages > 1:
+            kb.append([btn(f"{pg + 1}/{pages}", f"hzs:{i}:{(pg + 1) % pages}")])
+        kb.append([btn("🔙 بازگشت", "hz"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   f'🖥 سرورهای «{esc(acc["name"])}» ({len(servers)}):', kb)
+
+    def _hz_info(self, chat: int, mid: int, i: int, sid: str) -> None:
+        try:
+            acc = self._hz_accs()[i]
+            s = Hz(acc["token"]).call(f"/servers/{sid}").get("server") or {}
+        except (IndexError, HzError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        if not s:
+            self._show(chat, mid, "❌ سرور پیدا نشد.", home_kb())
+            return
+        ip4 = ((s.get("public_net") or {}).get("ipv4") or {}).get("ip", "—")
+        ip6 = ((s.get("public_net") or {}).get("ipv6") or {}).get("ip", "—")
+        st = s.get("server_type") or {}
+        txt = (f'🚀 <b>{esc(s.get("name"))}</b> [{esc(s.get("status"))}]\n'
+               f"IPv4: <code>{esc(ip4)}</code>\n"
+               f"IPv6: <code>{esc(ip6)}</code>\n"
+               f'CPU: {esc(st.get("cores", "—"))} · RAM: {esc(st.get("memory", "—"))}GB · '
+               f'Disk: {esc(st.get("disk", "—"))}GB')
+        kb = [[btn("⚡ روشن", f"hzsu:{i}:{sid}:on"),
+               btn("🔌 خاموش", f"hzsu:{i}:{sid}:off")],
+              [btn("🔄 ریبوت", f"hzsu:{i}:{sid}:reboot"),
+               btn("✏️ تغییر نام", f"hzsu:{i}:{sid}:rename")],
+              [btn("🗑 حذف سرور", f"hzsu:{i}:{sid}:del")],
+              [btn("🔙 بازگشت", f"hzs:{i}:0"),
+               btn("🏠 خانه", "menu")]]
+        self._show(chat, mid, txt, kb)
+
+    def _hz_op(self, chat: int, mid: int, i: int, sid: str, step: str) -> None:
+        try:
+            tok = self._hz_accs()[i]["token"]
+        except IndexError:
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        if step == "rename":
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "hz_srv_rename", "acc": i,
+                                 "sid": sid}, 600)
+            self._show(chat, mid, "✏️ نام جدید سرور را بفرستید:",
+                       [[btn("🔙 انصراف", f"hzsi:{i}:{sid}")]])
+            return
+        if step == "del":
+            self._show(chat, mid, "⚠️ سرور حذف شود؟",
+                       [[btn("✅ بله، حذف کن", f"hzdelok:{i}:{sid}"),
+                         btn("❌ انصراف", f"hzsi:{i}:{sid}")]])
+            return
+        action = {"on": "poweron", "off": "poweroff",
+                  "reboot": "reboot", "reset": "reset"}.get(step)
+        if not action:
+            self._show(chat, mid, "❌ عملیات نامشخص.", home_kb())
+            return
+        try:
+            Hz(tok).call(f"/servers/{sid}/actions/{action}", "POST", {})
+            self.bot.send(chat, "✅ دستور ارسال شد.")
+        except HzError as e:
+            self._show(chat, mid, f"❌ نشد: {esc(e)}", home_kb())
+            return
+        self._hz_info(chat, 0, i, sid)
+
+    def _hz_del_server(self, chat: int, mid: int, i: int, sid: str) -> None:
+        try:
+            tok = self._hz_accs()[i]["token"]
+            Hz(tok).call(f"/servers/{sid}", "DELETE")
+            self.bot.send(chat, "✅ سرور حذف شد.")
+        except (IndexError, HzError) as e:
+            self._show(chat, mid, f"❌ نشد: {esc(e)}", home_kb())
+            return
+        self._hz_servers(chat, 0, i, 0)
