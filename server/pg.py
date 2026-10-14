@@ -11,8 +11,11 @@ class PgError(Exception):
     pass
 
 
+UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+
 def _get(url: str, token: str, timeout: int = 25):
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", **UA})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             if r.status != 200:
@@ -35,7 +38,7 @@ class Pg:
             {"username": self.username, "password": self.password}).encode()
         req = urllib.request.Request(
             self.base + "/api/admin/token", data=data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"})
+            headers={"Content-Type": "application/x-www-form-urlencoded", **UA})
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
                 d = json.load(r)
