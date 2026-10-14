@@ -91,3 +91,85 @@ class Hz:
 def status_emoji(st: str) -> str:
     return {"running": "🟢", "off": "🔴", "starting": "🟡"}.get(
         str(st), "⚪")
+
+
+def gb(num) -> float:
+    try:
+        return round(float(num or 0) / 1024 ** 3, 3)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def age_days(iso) -> str:
+    if not iso:
+        return "—"
+    try:
+        import datetime
+        ms = datetime.datetime.fromisoformat(
+            str(iso).replace("Z", "+00:00")).timestamp() * 1000
+        return str(max(0, int((__import__("time").time() * 1000 - ms) / 86400000)))
+    except (ValueError, TypeError):
+        return "—"
+
+
+_euro_cache: dict = {"at": 0, "v": None}
+
+
+def euro_rate() -> float | None:
+    import time
+    if time.time() - _euro_cache["at"] < 6 * 3600 and _euro_cache["v"]:
+        return _euro_cache["v"]
+    try:
+        req = urllib.request.Request("https://sarfe.erfjab.com/api/prices")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            rate = float((json.load(r) or {}).get("eur1") or 0)
+        if rate > 0:
+            _euro_cache.update(at=time.time(), v=rate)
+            return rate
+    except Exception:
+        pass
+    return _euro_cache["v"]
+
+
+def price_fmt(eur, euro) -> str:
+    try:
+        v = float(eur)
+    except (ValueError, TypeError):
+        return "—"
+    s = (f"{v:.4f}" if v < 1 else f"{v:.2f}") + "€"
+    if euro:
+        s += f" [{round(v * euro):,}T]".replace(",", ",")
+    return s
+
+
+def snap_count(images: list, server_id) -> int:
+    try:
+        sid = int(server_id)
+    except (ValueError, TypeError):
+        return 0
+    return sum(1 for im in images or []
+               if (im or {}).get("type") == "snapshot"
+               and ((im.get("created_from") or {}).get("id")) == sid)
+
+
+def primary_ip_id(v):
+    if not v:
+        return None
+    return v.get("id") if isinstance(v, dict) else v
+
+
+def ensure_off(hz: "Hz", server_id, max_ms: int = 30000) -> bool:
+    import time
+    try:
+        s0 = (hz.call(f"/servers/{server_id}") or {}).get("server") or {}
+        if s0.get("status") != "off":
+            hz.call(f"/servers/{server_id}/actions/poweroff", "POST", {})
+        t0 = time.time() * 1000
+        while time.time() * 1000 - t0 < max_ms:
+            s = (hz.call(f"/servers/{server_id}") or {}).get("server") or {}
+            if not s.get("locked") and s.get("status") == "off":
+                return True
+            time.sleep(1.5)
+    except HzError:
+        pass
+    return False

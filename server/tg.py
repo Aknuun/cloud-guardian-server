@@ -44,6 +44,101 @@ except Exception:
 
 CALL_TIMEOUT = 40
 
+# رنگ‌بندی دکمه‌ها (مثل کد قبلی — تلگرام style را رنگی رندر می‌کند):
+#   • ردیف‌های خطرناک (حذف/لغو/بازگشت/خانه/...) → قرمز (danger)
+#   • ردیف‌های «لیست داده» (دامنه/رکورد/سرور/...) → بدون رنگ
+#   • بقیه: ۱ و ۳ ستون → سبز · ۲ و ۴+ ستون → آبی
+_DATA_CB = ("cfz:", "cfr:", "hzs:", "hzsi:", "pgl:", "pgu:", "addrec:",
+            "zf:", "cfp:", "sel:", "e:", "p:", "z:", "dd:", "sr:", "qanz:",
+            "hzsv:", "hzn:")
+_DANGER_CB = ("del", "delete", "dely", "dy:", "dy", "stop", "cancel",
+              "reset", "revoke")
+_DANGER_WORDS = ("حذف", "لغو", "انصراف", "غیرفعال", "توقف", "ریست",
+                 "بازنشانی", "پاک‌کردن", "بازگشت")
+
+
+def _is_placeholder(b) -> bool:
+    return (not isinstance(b, dict)) or b.get("text") == " "
+
+
+def _is_back(b) -> bool:
+    if not isinstance(b, dict):
+        return False
+    t, cb = str(b.get("text", "")), str(b.get("callback_data", ""))
+    if any(e in t for e in ("🏠", "🔙", "⬅️", "بازگشت", "منو")):
+        return True
+    return cb in ("menu", "back", "noop") and ("🏠" in t or "🔙" in t or
+                                               "بازگشت" in t or "منو" in t)
+
+
+def _row_is_danger(row) -> bool:
+    for b in row:
+        if not isinstance(b, dict) or _is_placeholder(b):
+            continue
+        if b.get("style") == "danger":
+            return True
+        cb, t = str(b.get("callback_data", "")), str(b.get("text", ""))
+        if any(k in cb for k in _DANGER_CB):
+            return True
+        if any(w in t for w in ("🗑", "🛑", "🚫") + _DANGER_WORDS):
+            return True
+    return False
+
+
+def _row_is_data(row) -> bool:
+    return any(isinstance(b, dict) and not _is_placeholder(b)
+               and str(b.get("callback_data", "")).startswith(_DATA_CB)
+               for b in row)
+
+
+def _style_row(row: list) -> list:
+    if not isinstance(row, list):
+        return row
+    if _row_is_data(row):
+        out = []
+        for b in row:
+            if _is_placeholder(b):
+                out.append(b)
+            elif _is_back(b):
+                out.append({**b, "style": "danger"})
+            elif isinstance(b, dict) and b.get("style") == "plain":
+                d = dict(b)
+                d.pop("style", None)
+                out.append(d)
+            else:
+                out.append(b)
+        return out
+    if _row_is_danger(row):
+        auto = "danger"
+    else:
+        n = sum(1 for b in row
+                if isinstance(b, dict) and not _is_placeholder(b))
+        auto = "success" if n in (1, 3) else "primary"
+    out = []
+    for b in row:
+        if _is_placeholder(b):
+            out.append(b)
+        elif _is_back(b):
+            out.append({**b, "style": "danger"})
+        elif isinstance(b, dict) and b.get("style"):
+            if b["style"] == "plain":
+                d = dict(b)
+                d.pop("style", None)
+                out.append(d)
+            else:
+                out.append(b)
+        elif isinstance(b, dict):
+            out.append({**b, "style": auto})
+        else:
+            out.append(b)
+    return out
+
+
+def style_kb(kb: list | None) -> list | None:
+    if not kb:
+        return kb
+    return [_style_row(row) for row in kb]
+
 
 class Bot:
     def __init__(self, token: str, timeout: int = 60):
@@ -95,7 +190,7 @@ class Bot:
              parse: str = "HTML") -> dict:
         p = {"chat_id": chat_id, "text": text, "parse_mode": parse}
         if kb is not None:
-            p["reply_markup"] = json.dumps({"inline_keyboard": kb})
+            p["reply_markup"] = json.dumps({"inline_keyboard": style_kb(kb)})
         return self.call("sendMessage", p)
 
     def edit(self, chat_id: int, msg_id: int, text: str,
@@ -103,7 +198,7 @@ class Bot:
         p = {"chat_id": chat_id, "message_id": msg_id, "text": text,
              "parse_mode": parse}
         if kb is not None:
-            p["reply_markup"] = json.dumps({"inline_keyboard": kb})
+            p["reply_markup"] = json.dumps({"inline_keyboard": style_kb(kb)})
         try:
             return self.call("editMessageText", p)
         except BotError as e:

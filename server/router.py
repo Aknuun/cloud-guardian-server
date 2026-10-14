@@ -1196,68 +1196,362 @@ class Router:
 
     def _hz_info(self, chat: int, mid: int, i: int, sid: str) -> None:
         try:
-            acc = self._hz_accs()[i]
-            s = Hz(acc["token"]).call(f"/servers/{sid}").get("server") or {}
+            hz = Hz(self._hz_accs()[i]["token"])
+            s = (hz.call(f"/servers/{sid}") or {}).get("server") or {}
         except (IndexError, HzError) as e:
             self._show(chat, mid, f"❌ {esc(e)}", home_kb())
             return
         if not s:
             self._show(chat, mid, "❌ سرور پیدا نشد.", home_kb())
             return
+        from hz import gb, age_days, euro_rate, price_fmt, snap_count
+        ib, ob = gb(s.get("ingoing_traffic")), gb(s.get("outgoing_traffic"))
+        total = round((ib + ob) * 1000) / 1000
+        incl = gb(s.get("included_traffic"))
+        used = round(ob / incl * 1000) / 10 if incl else None
+        bill = round(max(total - incl, 0) * 1000) / 1000 if incl else 0
+        euro = euro_rate()
+        p = ((s.get("server_type") or {}).get("prices") or [{}])[0]
+        hourly = price_fmt((p.get("price_hourly") or {}).get("gross"), euro)
+        monthly = price_fmt((p.get("price_monthly") or {}).get("gross"), euro)
+        try:
+            imgs = hz.all("/images")
+            snaps = snap_count(imgs, sid)
+        except HzError:
+            snaps = "—"
+        st = s.get("server_type") or {}
+        loc = (s.get("datacenter") or {}).get("location") or s.get("location") or {}
+        locs = f'{loc.get("country", "—")}, {loc.get("city", "—")}' if loc else "—"
         ip4 = ((s.get("public_net") or {}).get("ipv4") or {}).get("ip", "—")
         ip6 = ((s.get("public_net") or {}).get("ipv6") or {}).get("ip", "—")
-        st = s.get("server_type") or {}
-        txt = (f'🚀 <b>{esc(s.get("name"))}</b> [{esc(s.get("status"))}]\n'
-               f"IPv4: <code>{esc(ip4)}</code>\n"
-               f"IPv6: <code>{esc(ip6)}</code>\n"
-               f'CPU: {esc(st.get("cores", "—"))} · RAM: {esc(st.get("memory", "—"))}GB · '
-               f'Disk: {esc(st.get("disk", "—"))}GB')
-        kb = [[btn("⚡ روشن", f"hzsu:{i}:{sid}:on"),
-               btn("🔌 خاموش", f"hzsu:{i}:{sid}:off")],
-              [btn("🔄 ریبوت", f"hzsu:{i}:{sid}:reboot"),
-               btn("✏️ تغییر نام", f"hzsu:{i}:{sid}:rename")],
-              [btn("🗑 حذف سرور", f"hzsu:{i}:{sid}:del")],
-              [btn("🔙 بازگشت", f"hzs:{i}:0"),
-               btn("🏠 خانه", "menu")]]
-        self._show(chat, mid, txt, kb)
+        img = s.get("image") or {}
+        created = str(s.get("created") or "")[:10] or "—"
+        text = (
+            f'🚀 نام: <code>{esc(s.get("name"))}</code> '
+            f'[<code>{esc(s.get("status"))}</code>]\n'
+            f"🔗 IPv4: <code>{esc(ip4)}</code>\n"
+            f"🔗 IPv6: <code>{esc(ip6)}</code>\n"
+            f"🌍 کشور/شهر: <code>{esc(locs)}</code>\n"
+            f'⚙️ CPU: <code>{esc(st.get("cores", "—"))} Core</code>\n'
+            f'💾 RAM: <code>{esc(st.get("memory", "—"))} GB</code>\n'
+            f'💿 Disk: <code>{esc(st.get("disk", "—"))} GB</code>\n'
+            f"📸 اسنپ‌شات: <code>{esc(snaps)}</code>\n"
+            f'🖼️ تصویر: <code>{esc(img.get("name") or img.get("description") or "—")}</code>\n'
+            f"📊 ترافیک:\n"
+            f" • ورودی: <code>{ib} GB</code>\n"
+            f" • خروجی: <code>{ob} GB</code>\n"
+            f" • کل: <code>{total} GB</code>\n"
+            f" • سهمیه: <code>{incl} GB</code>\n"
+            f' • مصرف: <code>{("—" if used is None else f"{used}%")} [Out/Included]</code>\n'
+            f" • مازاد: <code>{bill} GB</code>\n"
+            f"💰 قیمت:\n"
+            f" • ساعتی: <code>{esc(hourly)}</code>\n"
+            f" • ماهانه: <code>{esc(monthly)}</code>\n"
+            f"📅 ساخته‌شده: <code>{esc(created)} [{age_days(s.get('created'))} روز پیش]</code>")
+        kb = grid2([
+            btn("⚡ روشن", f"hzsu:{i}:{sid}:on"),
+            btn("🔌 خاموش", f"hzsu:{i}:{sid}:off"),
+            btn("🔄 ریبوت", f"hzsu:{i}:{sid}:reboot"),
+            btn("🔄 ریست", f"hzsu:{i}:{sid}:reset"),
+            btn("🔓 ریست رمز", f"hzsu:{i}:{sid}:pass"),
+            btn("✏️ تغییر نام", f"hzsu:{i}:{sid}:rename"),
+            btn("🛠️ ریبیلد", f"hzsu:{i}:{sid}:rebuild"),
+            btn("⬆️ ارتقا", f"hzsu:{i}:{sid}:upgrade"),
+            btn("📷 ساخت اسنپ‌شات", f"hzsu:{i}:{sid}:snap"),
+            btn("🗑 حذف اسنپ‌شات", f"hzsu:{i}:{sid}:dsnap"),
+            btn("🔗 اختصاص IPv4", f"hzsu:{i}:{sid}:a4"),
+            btn("🔗 اختصاص IPv6", f"hzsu:{i}:{sid}:a6"),
+            btn("❌ حذف IPv4", f"hzsu:{i}:{sid}:u4"),
+            btn("❌ حذف IPv6", f"hzsu:{i}:{sid}:u6"),
+            btn("🔄 جایگزینی IPv4", f"hzsu:{i}:{sid}:r4"),
+        ])
+        kb.append([btn("🔄 بروزرسانی", f"hzsi:{i}:{sid}"),
+                   btn("🗑 حذف سرور", f"hzsu:{i}:{sid}:del")])
+        kb.append([btn("🔙 بازگشت", f"hzs:{i}:0"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, text, kb)
 
     def _hz_op(self, chat: int, mid: int, i: int, sid: str, step: str) -> None:
         try:
-            tok = self._hz_accs()[i]["token"]
-        except IndexError:
-            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            hz = Hz(self._hz_accs()[i]["token"])
+            s = (hz.call(f"/servers/{sid}") or {}).get("server") or {}
+        except (IndexError, HzError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
             return
+        if not s:
+            self._show(chat, mid, "❌ سرور پیدا نشد.", home_kb())
+            return
+        back = f"hzsi:{i}:{sid}"
+        home = [btn("🔙 بازگشت", back), btn("🏠 خانه", "menu")]
         if step == "rename":
             self.store.put_json(f"pend:{chat}",
                                 {"type": "hz_srv_rename", "acc": i,
                                  "sid": sid}, 600)
             self._show(chat, mid, "✏️ نام جدید سرور را بفرستید:",
-                       [[btn("🔙 انصراف", f"hzsi:{i}:{sid}")]])
+                       [[btn("🔙 انصراف", back)]])
+            return
+        if step == "rebuild":
+            try:
+                imgs = hz.all("/images")
+            except HzError as e:
+                self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+                return
+            arch = (s.get("image") or {}).get("architecture")
+            avail = [im for im in imgs
+                     if im.get("type") in ("system", "snapshot")
+                     and (not arch or im.get("architecture") == arch)]
+            avail.sort(key=lambda x: 0 if x.get("type") == "system" else 1)
+            if not avail:
+                self._show(chat, mid, "❌ تصویری پیدا نشد.", home_kb())
+                return
+            kb = grid2([btn(str(im.get("name") or im.get("description")
+                                 or im.get("id")),
+                             f"hzsv:{i}:{sid}:rebuild:{im.get('id')}")
+                        for im in avail[:50]])
+            kb.append(home)
+            self._show(chat, mid,
+                       "🛠️ ریبیلد\n⚠️ همهٔ داده‌های سرور پاک می‌شود.\n\n"
+                       "تصویر جدید را انتخاب کنید:", kb)
+            return
+        if step == "upgrade":
+            try:
+                types = hz.all("/server_types")
+            except HzError as e:
+                self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+                return
+            cur = s.get("server_type") or {}
+            up = [t for t in types
+                  if t.get("architecture") == cur.get("architecture")
+                  and t.get("id") != cur.get("id")
+                  and (t.get("memory", 0) >= cur.get("memory", 0)
+                       or t.get("cores", 0) >= cur.get("cores", 0)
+                       or t.get("disk", 0) >= cur.get("disk", 0))]
+            if not up:
+                self._show(chat, mid,
+                           "❌ پلن ارتقای بالاتری موجود نیست.", home_kb())
+                return
+            up.sort(key=lambda t: (t.get("memory", 0), t.get("cores", 0),
+                                   t.get("disk", 0)))
+            kb = grid2([btn(str(t.get("name")),
+                             f"hzsv:{i}:{sid}:upgrade:{t.get('id')}")
+                        for t in up[:40]])
+            kb.append(home)
+            warn = "⚠️ برای ارتقا اول سرور را خاموش کن.\n" \
+                if s.get("status") != "off" else ""
+            self._show(chat, mid,
+                       f"⬆️ ارتقا\n{warn}پلن جدید را انتخاب کنید:", kb)
+            return
+        if step in ("a4", "a6"):
+            typ = "ipv4" if step == "a4" else "ipv6"
+            slot = (s.get("public_net") or {}).get(typ)
+            if slot:
+                self._show(chat, mid,
+                           f"⚠️ این سرور از قبل {typ} اختصاصی دارد؛ اول آن را حذف کن.",
+                           home_kb())
+                return
+            try:
+                ips = hz.all("/primary_ips")
+            except HzError as e:
+                self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+                return
+            avail = [ip for ip in ips
+                     if not ip.get("assignee_id") and ip.get("type") == typ]
+            if not avail:
+                self._show(chat, mid,
+                           f"❌ آی‌پی {typ} خالی پیدا نشد.", home_kb())
+                return
+            kb = grid2([btn(f'{ip.get("name", "")} {ip.get("ip", "")}'.strip(),
+                             f"hzsv:{i}:{sid}:{step}:{ip.get('id')}")
+                        for ip in avail[:40]])
+            kb.append(home)
+            self._show(chat, mid,
+                       f"🔗 آی‌پی {typ.upper()} برای اختصاص (سرور خاموش می‌شود):",
+                       kb)
+            return
+        if step == "dsnap":
+            try:
+                imgs = hz.all("/images")
+            except HzError as e:
+                self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+                return
+            snaps = [im for im in imgs if im.get("type") == "snapshot"
+                     and ((im.get("created_from") or {}).get("id")) == int(sid)]
+            if not snaps:
+                self._show(chat, mid,
+                           "❌ اسنپ‌شاتی برای این سرور پیدا نشد.", home_kb())
+                return
+            kb = grid2([btn(str(im.get("name") or im.get("description")
+                                 or im.get("id")),
+                             f"hzsv:{i}:{sid}:dsnap:{im.get('id')}")
+                        for im in snaps[:40]])
+            kb.append(home)
+            self._show(chat, mid, "🗑 اسنپ‌شات برای حذف:", kb)
+            return
+        label = {"on": "روشن کردن", "off": "خاموش کردن", "reset": "ریست شدید",
+                 "reboot": "ریبوت", "pass": "ریست رمز", "del": "حذف سرور",
+                 "snap": "ساخت اسنپ‌شات", "u4": "حذف اختصاص IPv4",
+                 "u6": "حذف اختصاص IPv6",
+                 "r4": "جایگزینی IPv4 با یکی تازه (قدیمی حذف و سرور دوباره روشن می‌شود)"}.get(step)
+        if not label:
+            self._show(chat, mid, "❓ عملیات ناشناخته.", home_kb())
             return
         if step == "del":
-            self._show(chat, mid, "⚠️ سرور حذف شود؟",
-                       [[btn("✅ بله، حذف کن", f"hzdelok:{i}:{sid}"),
-                         btn("❌ انصراف", f"hzsi:{i}:{sid}")]])
+            self._show(chat, mid, f'⚠️ مطمئنید «{label}» روی «{s.get("name")}» انجام شود؟',
+                       [[btn("✅ بله", f"hzok:{i}:{sid}:{step}"),
+                         btn("❌ انصراف", back)]])
             return
-        action = {"on": "poweron", "off": "poweroff",
-                  "reboot": "reboot", "reset": "reset"}.get(step)
-        if not action:
-            self._show(chat, mid, "❌ عملیات نامشخص.", home_kb())
-            return
-        try:
-            Hz(tok).call(f"/servers/{sid}/actions/{action}", "POST", {})
-            self.bot.send(chat, "✅ دستور ارسال شد.")
-        except HzError as e:
-            self._show(chat, mid, f"❌ نشد: {esc(e)}", home_kb())
-            return
-        self._hz_info(chat, 0, i, sid)
+        self._show(chat, mid, f'⚠️ مطمئنید «{label}» روی «{s.get("name")}» انجام شود؟',
+                   [[btn("✅ بله", f"hzok:{i}:{sid}:{step}"),
+                     btn("❌ انصراف", back)]])
 
-    def _hz_del_server(self, chat: int, mid: int, i: int, sid: str) -> None:
+    def _hz_pick(self, chat: int, mid: int, i: int, sid: str, step: str,
+                 arg: str) -> None:
         try:
-            tok = self._hz_accs()[i]["token"]
-            Hz(tok).call(f"/servers/{sid}", "DELETE")
-            self.bot.send(chat, "✅ سرور حذف شد.")
+            Hz(self._hz_accs()[i]["token"]).call(f"/servers/{sid}")
         except (IndexError, HzError) as e:
-            self._show(chat, mid, f"❌ نشد: {esc(e)}", home_kb())
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
             return
-        self._hz_servers(chat, 0, i, 0)
+        label = {"rebuild": "ریبیلد", "upgrade": "ارتقا",
+                 "a4": "اختصاص IPv4", "a6": "اختصاص IPv6",
+                 "dsnap": "حذف اسنپ‌شات"}.get(step, step)
+        self._show(chat, mid, f'⚠️ مطمئنید «{label}» انجام شود؟',
+                   [[btn("✅ بله", f"hzok:{i}:{sid}:{step}:{arg}"),
+                     btn("❌ انصراف", f"hzsi:{i}:{sid}")]])
+
+    def _hz_do(self, chat: int, mid: int, i: int, sid: str, step: str,
+               arg: str = "") -> None:
+        from hz import ensure_off, primary_ip_id
+        import datetime
+        try:
+            hz = Hz(self._hz_accs()[i]["token"])
+        except IndexError:
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        back = [[btn("🔙 بازگشت", f"hzsi:{i}:{sid}"),
+                 btn("🏠 خانه", "menu")]]
+        try:
+            if step == "del":
+                hz.call(f"/servers/{sid}", "DELETE")
+                self.bot.send(chat, "✅ سرور حذف شد.")
+                self._hz_servers(chat, 0, i, 0)
+                return
+            if step in ("on", "off", "reboot", "reset"):
+                hz.call(f"/servers/{sid}/actions/power{step}"
+                        if step in ("on", "off") else
+                        f"/servers/{sid}/actions/{step}", "POST", {})
+                self.bot.send(chat, "✅ دستور ارسال شد.")
+                self._hz_info(chat, 0, i, sid)
+                return
+            if step == "pass":
+                r = hz.call(f"/servers/{sid}/actions/reset_password",
+                            "POST", {})
+                pw = (r.get("action") or {}).get("root_password") or \
+                    (r.get("root_password") or "")
+                self.bot.send(chat,
+                              "🔓 رمز root جدید:\n"
+                              f"<code>{esc(pw)}</code>\n\n"
+                              "⚠️ آن را امن نگه دار.")
+                self._hz_info(chat, 0, i, sid)
+                return
+            if step == "snap":
+                name = f"snap-{sid}-{datetime.datetime.now():%Y%m%d-%H%M}"
+                hz.call(f"/servers/{sid}/actions/create_image", "POST",
+                        {"description": name, "type": "snapshot"})
+                self.bot.send(chat, f"✅ ساخت اسنپ‌شات شروع شد ({esc(name)}).")
+                self._hz_info(chat, 0, i, sid)
+                return
+            if step == "rebuild":
+                hz.call(f"/servers/{sid}/actions/rebuild", "POST",
+                        {"image": arg})
+                self.bot.send(chat, "✅ ریبیلد شروع شد.")
+                self._hz_info(chat, 0, i, sid)
+                return
+            if step == "upgrade":
+                s = (hz.call(f"/servers/{sid}") or {}).get("server") or {}
+                if s.get("status") != "off":
+                    self._show(chat, mid,
+                               "⚠️ برای ارتقا اول سرور را خاموش کن.", back)
+                    return
+                hz.call(f"/servers/{sid}/actions/change_type", "POST",
+                        {"server_type": arg, "upgrade_disk": True})
+                self.bot.send(chat, "✅ ارتقا شروع شد.")
+                self._hz_info(chat, 0, i, sid)
+                return
+            if step in ("a4", "a6"):
+                if not ensure_off(hz, sid):
+                    self._show(chat, mid,
+                               "⚠️ سرور در ۳۰ ثانیه خاموش نشد؛ دوباره تلاش کن.",
+                               back)
+                    return
+                hz.call(f"/primary_ips/{arg}/actions/assign", "POST",
+                        {"assignee_id": int(sid),
+                         "assignee_type": "server"})
+                self.bot.send(chat, "✅ آی‌پی اختصاص یافت.")
+                self._hz_info(chat, 0, i, sid)
+                return
+            if step in ("u4", "u6"):
+                s = (hz.call(f"/servers/{sid}") or {}).get("server") or {}
+                slot = (s.get("public_net") or {}).get(
+                    "ipv4" if step == "u4" else "ipv6")
+                ipid = primary_ip_id(slot)
+                if not ipid:
+                    self._show(chat, mid, "ℹ️ آی‌پی اختصاصی ندارد.", back)
+                    return
+                if not ensure_off(hz, sid):
+                    self._show(chat, mid,
+                               "⚠️ سرور در ۳۰ ثانیه خاموش نشد؛ دوباره تلاش کن.",
+                               back)
+                    return
+                hz.call(f"/primary_ips/{ipid}/actions/unassign", "POST", {})
+                self.bot.send(chat, "✅ اختصاص حذف شد.")
+                self._hz_info(chat, 0, i, sid)
+                return
+            if step == "r4":
+                s = (hz.call(f"/servers/{sid}") or {}).get("server") or {}
+                dc = (s.get("datacenter") or {}).get("name")
+                if not dc:
+                    self._show(chat, mid,
+                               "❌ دیتاسنتر سرور مشخص نیست.", back)
+                    return
+                old = primary_ip_id((s.get("public_net") or {}).get("ipv4"))
+                if not ensure_off(hz, sid):
+                    self._show(chat, mid,
+                               "⚠️ سرور در ۳۰ ثانیه خاموش نشد؛ دوباره تلاش کن.",
+                               back)
+                    return
+                c = hz.call("/primary_ips", "POST",
+                            {"type": "ipv4",
+                             "name": f"replace-{sid}",
+                             "datacenter": dc, "auto_delete": True})
+                nip = (c or {}).get("primary_ip") or {}
+                if not nip.get("id"):
+                    self._show(chat, mid, "❌ ساخت IPv4 تازه ناموفق شد.",
+                               back)
+                    return
+                if old:
+                    hz.call(f"/primary_ips/{old}/actions/unassign",
+                            "POST", {})
+                hz.call(f"/primary_ips/{nip['id']}/actions/assign", "POST",
+                        {"assignee_id": int(sid), "assignee_type": "server"})
+                if old:
+                    try:
+                        hz.call(f"/primary_ips/{old}", "DELETE")
+                    except HzError:
+                        pass
+                try:
+                    hz.call(f"/servers/{sid}/actions/poweron", "POST", {})
+                except HzError:
+                    pass
+                self.bot.send(chat,
+                              "✅ جایگزینی انجام شد.\n"
+                              f'IPv4 تازه: <code>{esc(nip.get("ip"))}</code>')
+                self._hz_info(chat, 0, i, sid)
+                return
+            if step == "dsnap":
+                hz.call(f"/images/{arg}", "DELETE")
+                self.bot.send(chat, "✅ اسنپ‌شات حذف شد.")
+                self._hz_info(chat, 0, i, sid)
+                return
+            self._show(chat, mid, "❓ عملیات ناشناخته.", back)
+        except HzError as e:
+            self._show(chat, mid, f"❌ خطا: {esc(e)}", back)
