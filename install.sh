@@ -21,6 +21,10 @@ HZ_TOKEN="${CG_HZ_TOKEN:-}"
 CF_ACCOUNT="${CG_CF_ACCOUNT:-}"
 FO_NS="${CG_FO_NS:-}"
 CF_API_TOKEN="${CG_CF_API_TOKEN:-}"
+if [[ "${CG_NONINTERACTIVE:-}" == "1" ]]; then
+  [[ -n "$BOT_TOKEN" ]] || { echo "CG_BOT_TOKEN required"; exit 1; }
+  [[ -n "$ADMIN_ID" ]] || { echo "CG_ADMIN_ID required"; exit 1; }
+else
 [[ -n "$BOT_TOKEN" ]] || read -rp "Bot token (از @BotFather بگیرید و اینجا بدهید): " BOT_TOKEN
 [[ -n "$ADMIN_ID" ]] || read -rp "Admin numeric Telegram ID (آیدی عددی ادمین): " ADMIN_ID
 [[ -n "$CF_TOKEN" ]] || read -rp "Cloudflare API token (Enter to skip): " CF_TOKEN
@@ -28,6 +32,7 @@ CF_API_TOKEN="${CG_CF_API_TOKEN:-}"
 [[ -n "$CF_ACCOUNT" ]] || read -rp "Failover: CF account ID (Enter to skip failover): " CF_ACCOUNT
 [[ -n "$FO_NS" ]] || read -rp "Failover: KV namespace ID: " FO_NS
 [[ -n "$CF_API_TOKEN" ]] || read -rp "Failover: CF API token with KV+Workers rights: " CF_API_TOKEN
+fi
 
 cat > "$DST/config.json" <<EOF
 {
