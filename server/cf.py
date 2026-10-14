@@ -46,3 +46,11 @@ class Cf:
 
     def del_record(self, zone_id: str, rec_id: str) -> dict:
         return self._req("DELETE", f"/zones/{zone_id}/dns_records/{rec_id}")
+
+    def update_record(self, zone_id: str, rec: dict, **changes) -> dict:
+        body = {"type": rec.get("type"), "name": rec.get("name"),
+                "content": rec.get("content"), "ttl": rec.get("ttl", 1),
+                "proxied": bool(rec.get("proxied"))}
+        body.update(changes)
+        return self._req("PUT", f"/zones/{zone_id}/dns_records/{rec.get('id')}",
+                         body)

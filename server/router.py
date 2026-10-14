@@ -144,8 +144,21 @@ class Router:
             _, zid, rid = data.split(":", 2)
             self._cf_del_ask(chat, mid, zid, rid)
         elif data.startswith("cfdelok:"):
-            _, zid, rid = data.split(":", 2)
+            _, zid, rid = data.split(":")
             self._cf_del_do(chat, mid, zid, rid)
+        elif data.startswith("cfpx:"):
+            _, zid, rid = data.split(":")
+            self._cf_toggle_px(chat, mid, zid, rid)
+        elif data.startswith("cfttl:"):
+            _, zid, rid = data.split(":")
+            self._cf_cycle_ttl(chat, mid, zid, rid)
+        elif data.startswith("cfedit:"):
+            _, zid, rid = data.split(":")
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "cfedit", "zid": zid, "rid": rid,
+                                 "back": f"cfr:{zid}:{rid}"}, 900)
+            self._show(chat, mid, "✏️ مقدار جدید را بفرستید:",
+                       [[btn("❌ انصراف", f"cfr:{zid}:{rid}")]])
         elif data.startswith("cfadd:"):
             self._cf_add_start(chat, mid, data[6:])
         else:
@@ -234,6 +247,10 @@ class Router:
                f"{'روشن' if r.get('proxied') else 'خاموش'}")
         kb = [[btn("🗑 حذف", f"cfdel:{zid}:{rid}"),
                btn("🔙 بازگشت", f"cfz:{zid}")],
+              [btn(f'🌐 پروکسی: {"روشن" if r.get("proxied") else "خاموش"}',
+                   f"cfpx:{zid}:{rid}"),
+               btn(f'⏱ TTL: {r.get("ttl")}', f"cfttl:{zid}:{rid}")],
+              [btn("✏️ تغییر مقدار", f"cfedit:{zid}:{rid}")],
               [btn("🏠 خانه", "menu")]]
         self._show(chat, mid, txt, kb)
 
@@ -248,6 +265,43 @@ class Router:
             self._cf_records(chat, mid, zid, 0)
         except CfError as e:
             self._show(chat, mid, f"❌ حذف نشد: {esc(e)}", home_kb())
+
+    def _cf_find(self, zid: str, rid: str):
+        try:
+            recs = self.cf.records(zid) or []
+        except CfError:
+            return None
+        return next((x for x in recs if x.get("id") == rid), None)
+
+    def _cf_toggle_px(self, chat: int, mid: int, zid: str, rid: str) -> None:
+        r = self._cf_find(zid, rid)
+        if not r:
+            self._show(chat, mid, "❌ رکورد پیدا نشد.", home_kb())
+            return
+        try:
+            self.cf.update_record(zid, r, proxied=not r.get("proxied"))
+        except CfError as e:
+            self._show(chat, mid, f"❌ نشد: {esc(e)}", home_kb())
+            return
+        self._cf_record(chat, mid, zid, rid)
+
+    def _cf_cycle_ttl(self, chat: int, mid: int, zid: str, rid: str) -> None:
+        r = self._cf_find(zid, rid)
+        if not r:
+            self._show(chat, mid, "❌ رکورد پیدا نشد.", home_kb())
+            return
+        steps = [1, 120, 300, 600, 1800, 3600]
+        try:
+            cur = int(r.get("ttl", 1))
+        except (ValueError, TypeError):
+            cur = 1
+        nxt = steps[0] if cur not in steps else steps[(steps.index(cur) + 1) % len(steps)]
+        try:
+            self.cf.update_record(zid, r, ttl=nxt)
+        except CfError as e:
+            self._show(chat, mid, f"❌ نشد: {esc(e)}", home_kb())
+            return
+        self._cf_record(chat, mid, zid, rid)
 
     def _cf_add_start(self, chat: int, mid: int, zid: str) -> None:
         self.store.put_json(f"pend:{chat}",
@@ -273,6 +327,20 @@ class Router:
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, "✅ رکورد ثبت شد.")
             self._cf_records(chat, 0, pend["zid"], 0)
+        elif pend.get("type") == "cfedit":
+            r = self._cf_find(pend["zid"], pend["rid"])
+            if not r:
+                self.store.delete(f"pend:{chat}")
+                self.bot.send(chat, "❌ رکورد پیدا نشد.")
+                return
+            try:
+                self.cf.update_record(pend["zid"], r, content=text.strip())
+            except CfError as e:
+                self.bot.send(chat, f"❌ نشد: {esc(e)}")
+                return
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ مقدار عوض شد.")
+            self._cf_record(chat, 0, pend["zid"], pend["rid"])
         elif pend.get("type") == "hz_add_name":
             name = text.replace(" ", "")
             if not name:
