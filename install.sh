@@ -29,6 +29,8 @@ else
 [[ -n "$ADMIN_ID" ]] || read -rp "Admin numeric Telegram ID (آیدی عددی ادمین): " ADMIN_ID
 [[ -n "$CF_TOKEN" ]] || read -rp "Cloudflare API token (Enter to skip): " CF_TOKEN
 [[ -n "$HZ_TOKEN" ]] || read -rp "Hetzner API token (Enter to skip): " HZ_TOKEN
+CG_PUBLIC_URL="${CG_PUBLIC_URL:-}"
+[[ -n "$CG_PUBLIC_URL" ]] || read -rp "Public base URL for webhooks (e.g. http://SERVER_IP:8787, Enter to skip): " CG_PUBLIC_URL
 [[ -n "$CF_ACCOUNT" ]] || read -rp "Failover: CF account ID (Enter to skip failover): " CF_ACCOUNT
 [[ -n "$FO_NS" ]] || read -rp "Failover: KV namespace ID: " FO_NS
 [[ -n "$CF_API_TOKEN" ]] || read -rp "Failover: CF API token with KV+Workers rights: " CF_API_TOKEN
@@ -42,7 +44,8 @@ cat > "$DST/config.json" <<EOF
   "hz_token": "$HZ_TOKEN",
   "cf_account_id": "$CF_ACCOUNT",
   "fo_namespace_id": "$FO_NS",
-  "cf_api_token": "$CF_API_TOKEN"
+  "cf_api_token": "$CF_API_TOKEN",
+  "public_url": "$CG_PUBLIC_URL"
 }
 EOF
 chmod 600 "$DST/config.json"

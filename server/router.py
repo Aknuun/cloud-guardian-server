@@ -74,6 +74,19 @@ def home_kb() -> list:
     return [[btn("🏠 خانه", "menu")]]
 
 
+def _pg_tg_username(bot_token: str) -> str:
+    import json as _j
+    import urllib.request as _u
+    try:
+        with _u.urlopen(_u.Request(
+                f"https://api.telegram.org/bot{bot_token}/getMe"),
+                timeout=20) as r:
+            un = (_j.load(r).get("result") or {}).get("username") or ""
+            return str(un)
+    except Exception:
+        return ""
+
+
 class Router:
     def __init__(self, bot: Bot, store: Store, cf: Cf, admin_id: int,
                  cf_token: str = ""):
@@ -358,20 +371,47 @@ class Router:
             self._nd_toggle(chat, mid, data[5:])
         elif data == "pghook":
             self._pghook_home(chat, mid)
-        elif data == "pgon":
+        elif data == "pgtoggle":
             import alerts as _al
             cfg = _al.get_cfg(self.store)
-            cfg["enabled"] = True
+            cfg["enabled"] = not cfg.get("enabled", True)
             _al.save_cfg(self.store, cfg)
             self._pghook_home(chat, mid)
-        elif data == "pgoff":
+        elif data == "pgsilent":
             import alerts as _al
             cfg = _al.get_cfg(self.store)
-            cfg["enabled"] = False
+            cfg["silent_me"] = not cfg.get("silent_me", False)
             _al.save_cfg(self.store, cfg)
             self._pghook_home(chat, mid)
+        elif data.startswith("pgpanel:"):
+            self._pgpanel(chat, mid, int(data[8:]))
+        elif data.startswith("pgregen:"):
+            import alerts as _al
+            import secrets as _secrets
+            cfg = _al.get_cfg(self.store)
+            pid = str(self._pg_panels()[int(data[8:])].get("url"))
+            cfg.setdefault("panels", {}).setdefault(pid, {})["secret"] = \
+                _secrets.token_hex(12)
+            _al.save_cfg(self.store, cfg)
+            self._pgpanel(chat, mid, int(data[8:]))
         elif data.startswith("pgtest:"):
             self._pghook_test(chat, mid, int(data[7:]))
+        elif data.startswith("pgdash:"):
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "pg_dashpath",
+                                 "panel": int(data[7:])}, 600)
+            self._show(chat, mid,
+                       "🛣 مسیر داشبورد این پنل را بفرست (مثلاً `/dashboard` یا `/fxeybo`).\nبرای برگشت به پیش‌فرض (`/dashboard`) یک خط «-» بفرست.",
+                       [[btn("🔙 انصراف", f'pgpanel:{data[7:]}')]])
+        elif data.startswith("pgrenewbot:"):
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "pg_renewbot",
+                                 "panel": int(data[11:])}, 600)
+            self._show(chat, mid,
+                       "🤖 آیدی ربات داخلی همین پنل را بفرست (بدون @، مثلاً `allmarzbot`).\n\nبرای حذف (فقط دکمه پنل بماند) یک خط «-» بفرست.",
+                       [[btn("🔙 انصراف", f'pgpanel:{data[11:]}')]])
+        elif data.startswith("pgrecur:"):
+            self._pgrecur_ask(chat, mid, int(data[8:]))
         elif data == "ln":
             self._ln_home(chat, mid)
         elif data == "lna":
@@ -1122,6 +1162,89 @@ class Router:
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
+        elif pend.get("type") == "pg_dashpath":
+            import alerts as _al
+            self.store.delete(f"pend:{chat}")
+            cfg = _al.get_cfg(self.store)
+            try:
+                pid = str(self._pg_panels()[pend["panel"]].get("url"))
+            except IndexError:
+                self.bot.send(chat, "❌ پنل پیدا نشد.")
+                return
+            cfg.setdefault("panels", {}).setdefault(pid, {})
+            if text.strip() == "-":
+                cfg["panels"][pid].pop("dashpath", None)
+            else:
+                d = text.strip()
+                if not d.startswith("/"):
+                    d = "/" + d
+                d = d.rstrip("/") or "/dashboard"
+                import re as _re
+                if _re.search(r"[\s?#]", d) or len(d) > 60:
+                    self.bot.send(chat,
+                                  "❌ مسیر معتبر نیست (مثل `/dashboard`).")
+                    return
+                cfg["panels"][pid]["dashpath"] = d
+            _al.save_cfg(self.store, cfg)
+            self.bot.send(chat, "✅ ذخیره شد.",
+                          [[btn("🔙 پنل", f'pgpanel:{pend["panel"]}'),
+                            btn("🏠 خانه", "menu")]])
+        elif pend.get("type") == "pg_renewbot":
+            import alerts as _al
+            import re as _re
+            self.store.delete(f"pend:{chat}")
+            cfg = _al.get_cfg(self.store)
+            try:
+                pid = str(self._pg_panels()[pend["panel"]].get("url"))
+            except IndexError:
+                self.bot.send(chat, "❌ پنل پیدا نشد.")
+                return
+            cfg.setdefault("panels", {}).setdefault(pid, {})
+            if text.strip() == "-":
+                cfg["panels"][pid].pop("renewbot", None)
+            else:
+                v = text.strip().lstrip("@")
+                if not _re.match(r"^[A-Za-z0-9_]{3,64}$", v) or \
+                   not v.lower().endswith("bot"):
+                    self.bot.send(chat,
+                                  "❌ آیدی ربات معتبر نیست (مثلاً `allmarzbot`).")
+                    return
+                cfg["panels"][pid]["renewbot"] = v
+                cfg["panels"][pid]["renewbotAuto"] = False
+            _al.save_cfg(self.store, cfg)
+            self.bot.send(chat, "✅ ذخیره شد.",
+                          [[btn("🔙 پنل", f'pgpanel:{pend["panel"]}'),
+                            btn("🏠 خانه", "menu")]])
+        elif pend.get("type") == "pg_recur":
+            from pg import Pg as _Pg
+            self.store.delete(f"pend:{chat}")
+            try:
+                n = int(text.strip())
+                assert 60 <= n <= 86400
+            except (ValueError, AssertionError):
+                self.bot.send(chat, "❌ عدد بین ۶۰ تا ۸۶۴۰۰ بفرست.")
+                return
+            try:
+                p = self._pg_panels()[pend["panel"]]
+                tok = _Pg(p["url"], p["username"], p["password"]).login()
+                st = _Pg(p["url"], p["username"], p["password"]).settings(tok)
+                st["webhook"]["recurrent"] = n
+                import json as _j
+                import urllib.request as _u
+                req = _u.Request(p["url"].rstrip("/") + "/api/settings",
+                                 data=_j.dumps(st).encode(),
+                                 headers={"Authorization": f"Bearer {tok}",
+                                          "Content-Type": "application/json"},
+                                 method="PUT")
+                with _u.urlopen(req, timeout=25) as r:
+                    ok = r.status == 200
+            except Exception:
+                ok = False
+            self.bot.send(chat,
+                          f"✅ recurrent شد {n} ثانیه." if ok
+                          else "❌ ذخیره در پنل نشد.",
+                          [[btn("🔙 پنل", f'pgpanel:{pend["panel"]}'),
+                            btn("🏠 خانه", "menu")]])
         elif pend.get("type") == "ln_add_name":
             name = text.replace(" ", "")
             if not name:
@@ -1192,29 +1315,103 @@ class Router:
 
     def _pghook_home(self, chat: int, mid: int = 0) -> None:
         import alerts as _al
-        import secrets as _secrets
         cfg = _al.get_cfg(self.store)
         panels = self._pg_panels()
-        lines = ["🔔 هشدار انقضا و حجم", "",
-                 f'وضعیت: {"روشن ✅" if cfg["enabled"] else "خاموش ⛔"}',
-                 f'آستانه حجم: {", ".join(str(x) for x in cfg["usage"])}٪',
-                 f'آستانه انقضا: {", ".join(str(x) for x in cfg["days"])} روز',
-                 ""]
-        kb = []
+        lines = ["🔔 هشدار انقضا و حجم پاسارگارد", ""]
+        if not self.store.get("pghook_seen"):
+            lines.append("👋 راهنمای شروع (فقط همین یک‌بار می‌بینی):")
+            lines.append("۱️⃣ تو صفحه هر پنل، آدرس وبهوک را کپی کن و در تنظیمات webhook همان پنل بگذار (days_left و usage_percent هم همان‌جاست).")
+            lines.append("۲️⃣ ربات داخلی (دکمه تمدید با ربات) معمولاً خودکار از خود پنل خوانده می‌شود؛ اگر نشد تو صفحه هر پنل دستی بده.")
+            lines.append("۳️⃣ هر ادمین پنل که telegram_id داشته باشد هشدار کاربرهایش را می‌گیرد.")
+            lines.append("")
+            self.store.put("pghook_seen", "1")
+        lines.append("وضعیت: " + ("▶️ فعال" if cfg["enabled"] else "⏸ غیرفعال (پیام نمی‌آید)"))
+        lines.append("📅 آستانه‌ها در خود پنل تنظیم می‌شوند (پیشنهاد: روز ۱، حجم ۹۰٪).")
+        lines.append("📦 ارسال جمعی پولی: حجم ساعتی یک‌جا، انقضا روزی یک‌بار (کرون خودش از پنل می‌خواند)؛ فقط بحران امروزی (۰ روز / ۱۰۰٪) فوری می‌آید.")
+        lines.append(f'🖥 پنل‌های متصل: {len(cfg.get("panels") or {})} از {len(panels)}')
+        lines.append("")
+        lines.append("روش: در تنظیمات webhook هر پنل، آدرس اختصاصی‌اش را بگذار تا وقتی کاربری به آستانه رسید، پنل خودش خبر بده.")
+        kb = [[btn("⏸ غیرفعال‌سازی" if cfg["enabled"] else "▶️ فعال‌سازی",
+                   "pgtoggle"),
+               btn("🔕 سایلنت من: روشن" if cfg.get("silent_me")
+                   else "🔔 سایلنت من: خاموش", "pgsilent")]]
         for i, p in enumerate(panels):
             pid = str(p.get("url"))
-            pcfg = (cfg.get("panels") or {}).get(pid) or {}
-            if not pcfg.get("secret"):
-                pcfg["secret"] = _secrets.token_hex(12)
-                cfg.setdefault("panels", {})[pid] = pcfg
-            kb.append([btn(f'🧪 تست «{p.get("name") or pid}»',
-                           f"pgtest:{i}")])
-            lines.append(f'• {p.get("name") or pid}\n'
-                         f'  <code>/pghook/{pcfg["secret"]}</code>')
-        _al.save_cfg(self.store, cfg)
-        kb.append([btn("⏸ خاموش" if cfg["enabled"] else "▶️ روشن",
-                       "pgoff" if cfg["enabled"] else "pgon")])
+            reg = pid in (cfg.get("panels") or {})
+            kb.append([btn(f'{"✅ " if reg else "⬜ "}⚙️ تنظیم '
+                           f'{str(p.get("name") or pid)[:22]}',
+                           f"pgpanel:{i}")])
         kb.append([btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _pgpanel(self, chat: int, mid: int, i: int) -> None:
+        import alerts as _al
+        import secrets as _secrets
+        from pg import Pg as _Pg
+        try:
+            p = self._pg_panels()[i]
+        except IndexError:
+            self._show(chat, mid, "❌ پنل پیدا نشد.",
+                       [[btn("🔙 هشدارها", "pghook"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        pid = str(p.get("url"))
+        cfg = _al.get_cfg(self.store)
+        pcfg = (cfg.get("panels") or {}).get(pid) or {}
+        if not pcfg.get("secret"):
+            pcfg["secret"] = _secrets.token_hex(12)
+            cfg.setdefault("panels", {})[pid] = pcfg
+            _al.save_cfg(self.store, cfg)
+        base = (self._public_base() or "<server-url>").rstrip("/")
+        url = base + "/pghook/" + pcfg["secret"]
+        hook = None
+        try:
+            pgc = _Pg(p["url"], p["username"], p["password"])
+            tok = pgc.login()
+            st = pgc.settings(tok) if tok else None
+            w = (st or {}).get("webhook") or {}
+            hook = {"enable": w.get("enable") is True,
+                    "days": w.get("days_left"), "usage": w.get("usage_percent"),
+                    "recurrent": w.get("recurrent"),
+                    "urls": [str((x or {}).get("url") or "")
+                             for x in (w.get("webhooks") or [])]}
+            # ربات داخلی خودکار از تنظیمات تلگرام پنل
+            ttok = ((st or {}).get("telegram") or {}).get("token")
+            if ttok and (not pcfg.get("renewbot") or
+                         pcfg.get("renewbotAuto")):
+                un = _pg_tg_username(ttok)
+                if un and un != pcfg.get("renewbot"):
+                    pcfg["renewbot"] = un
+                    pcfg["renewbotAuto"] = True
+                    cfg.setdefault("panels", {})[pid] = pcfg
+                    _al.save_cfg(self.store, cfg)
+        except Exception:
+            pass
+        dash = pcfg.get("dashpath", "/dashboard")
+        botnm = pcfg.get("renewbot", "")
+        lines = [f'🔔 وبهوک پنل: {p.get("name") or pid}', "",
+                 "📨 آدرس وبهوک:", f"<code>{esc(url)}</code>", "",
+                 "🔑 سکرت:", f'<code>{esc(pcfg["secret"])}</code>', "",
+                 "آدرس بالا را در قسمت url و سکرت زیر را در قسمت secret تنظیمات webhook پنل کپی کن (days_left و usage_percent هم همان‌جاست).",
+                 "", f"🛣 مسیر داشبورد: <code>{esc(dash)}</code>",
+                 "🤖 ربات داخلی: " + (f"@{botnm}" + (" (خودکار)" if pcfg.get("renewbotAuto") else "")
+                                        if botnm else "تعریف نشده")]
+        if hook:
+            ok_url = any(u.rstrip("/") == url.rstrip("/") for u in hook["urls"])
+            lines.append("📡 پنل: وبهوک " +
+                         ("روشن" if hook["enable"] else "❌ خاموش") +
+                         (f' · روز {hook["days"]}' if hook.get("days") else "") +
+                         (f' · حجم {hook["usage"]}' if hook.get("usage") else "") +
+                         (f' · هر {hook["recurrent"]}ث' if hook.get("recurrent") is not None else "") +
+                         " · آدرس ما " + ("✅" if ok_url else "❌ نیست"))
+        kb = [[btn("🧪 پیام تستی", f"pgtest:{i}")],
+              [btn("🛣 مسیر داشبورد", f"pgdash:{i}"),
+               btn("🤖 ربات داخلی", f"pgrenewbot:{i}")],
+              [btn("🔄 توکن جدید", f"pgregen:{i}")],
+              [btn("⏱ recurrent" + (f': {hook["recurrent"]}ث' if hook and hook.get("recurrent") is not None else ""),
+                   f"pgrecur:{i}")],
+              [btn("🔙 هشدارها", "pghook"),
+               btn("🏠 خانه", "menu")]]
         self._show(chat, mid, "\n".join(lines), kb)
 
     def _pghook_test(self, chat: int, mid: int, i: int) -> None:
@@ -1222,7 +1419,8 @@ class Router:
         try:
             p = self._pg_panels()[i]
         except IndexError:
-            self._show(chat, mid, "❌ پنل پیدا نشد.", home_kb())
+            self._show(chat, mid, "❌ پنل پیدا نشد.",
+                       [[btn("🔙 هشدارها", "pghook")]])
             return
         cfg = _al.get_cfg(self.store)
         pcfg = (cfg.get("panels") or {}).get(str(p.get("url")), {})
@@ -1230,11 +1428,39 @@ class Router:
             _al.send_alert(self.bot, chat,
                            {"name": p.get("name"), "url": p.get("url"),
                             "renewbot": pcfg.get("renewbot", "")},
-                           [{"username": "testuser", "kind": "usage",
-                             "value": 95.5, "expireTs": None,
-                             "status": "active", "owner": ""}], test=True)
+                           [{"username": "test-user", "kind": "days",
+                             "value": 1, "expireTs": None, "status": "",
+                             "owner": "-"}], test=True)
         except Exception as e:
             self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        self._pgpanel(chat, 0, i)
+
+    def _pgrecur_ask(self, chat: int, mid: int, i: int) -> None:
+        from pg import Pg as _Pg
+        try:
+            p = self._pg_panels()[i]
+            tok = _Pg(p["url"], p["username"], p["password"]).login()
+            st = _Pg(p["url"], p["username"], p["password"]).settings(tok) \
+                if tok else None
+            cur = (st or {}).get("webhook", {}).get("recurrent")
+        except Exception:
+            cur = None
+        self.store.put_json(f"pend:{chat}",
+                            {"type": "pg_recur", "panel": i}, 600)
+        self._show(chat, mid,
+                   "⏱ هر چند ثانیه پنل کاربرها را برای هشدار ارزیابی کند؟\n\nفعلی: " +
+                   (str(cur) + " ثانیه" if cur is not None else "؟") +
+                   "\nپیشنهاد: 3600 (ساعتی).\n\nعدد بین ۶۰ تا ۸۶۴۰۰ بفرست.",
+                   [[btn("🔙 انصراف", f"pgpanel:{i}")]])
+
+    def _public_base(self) -> str:
+        try:
+            with open("/opt/cg-server/config.json", encoding="utf-8") as f:
+                import json as _j
+                return str(_j.load(f).get("public_url") or "")
+        except Exception:
+            return ""
 
     # ---------- Usage monitor ----------
 

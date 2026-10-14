@@ -114,6 +114,13 @@ class Pg:
                         "reason": n.get("message") or n.get("error")})
         return out
 
+    def settings(self, token: str) -> dict | None:
+        try:
+            d = _get(f"{self.base}/api/settings", token, timeout=25)
+        except PgError:
+            return None
+        return d if isinstance(d, dict) else None
+
     def user(self, token: str, username: str) -> dict | None:
         try:
             d = _get(f"{self.base}/api/user/{urllib.parse.quote(username)}",
