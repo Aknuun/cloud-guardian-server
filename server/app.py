@@ -100,6 +100,12 @@ def main() -> None:
                     print(f"handle: {e}", flush=True)
         except Exception as e:
             print(f"dispatch: {e}", flush=True)
+        try:
+            for r in router.rem_due(int(time.time() * 1000)):
+                bot.send(int(cfg["admin_id"]),
+                         f'⏰ یادآور\n\n{r.get("text", "—")}')
+        except Exception as e:
+            print(f"remind: {e}", flush=True)
         if time.time() - last_purge > 3600:
             try:
                 store.purge()

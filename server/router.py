@@ -12,6 +12,8 @@ import html
 
 from cf import Cf, CfError
 from hz import Hz, HzError, status_emoji
+from jalali import fmt_jalali, parse_jalali_datetime
+from ln import Ln, LnError, list_text
 from pg import Pg, PgError, gb, pct, days_left
 from store import Store
 from tg import Bot
@@ -299,11 +301,72 @@ class Router:
                 self.store.put_json(f"pend:{chat}", {"type": "zsearch"}, 600)
                 self._show(chat, mid, "🔍 بخشی از نام یا مقدار رکورد را بفرستید:",
                            [[btn("❌ انصراف", "zones")]])
-        elif data in ("noop", "ln", "arvan", "hf", "nd", "pghook", "um",
-                      "srv", "dommon", "rem", "fmail", "lb", "settings",
+        elif data in ("noop", "arvan", "hf", "nd", "pghook", "um",
+                      "srv", "dommon", "fmail", "lb", "settings",
                       "zset", "selmode", "zmail", "ztraf", "cref", "rtraf"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
+        elif data == "ln":
+            self._ln_home(chat, mid)
+        elif data == "lna":
+            self.store.put_json(f"pend:{chat}", {"type": "ln_add_name"}, 600)
+            self._show(chat, mid,
+                       "👤 نام دلخواه اکانت لینود را بفرستید (مثلاً: اصلی):",
+                       [[btn("🔙 بازگشت", "ln"),
+                         btn("🏠 خانه", "menu")]])
+        elif data == "lndel":
+            self._ln_del_list(chat, mid)
+        elif data.startswith("lnd:"):
+            self._ln_del_ask(chat, mid, data[4:])
+        elif data.startswith("lndy:"):
+            self._ln_del_do(chat, mid, data[5:])
+        elif data.startswith("lnm:"):
+            accs = self._ln_accs()
+            try:
+                i = int(data[4:])
+                if 0 <= i < len(accs):
+                    self.store.put("ln_sel", str(i))
+            except (ValueError, IndexError):
+                pass
+            self._ln_home(chat, mid)
+        elif data == "lnaccs":
+            self._ln_accs_menu(chat, mid)
+        elif data.startswith("lnacc:"):
+            self._ln_acc_settings(chat, mid, int(data[6:]))
+        elif data.startswith("lns:"):
+            _, i, pg = data.split(":")
+            self._ln_servers(chat, mid, int(i), int(pg))
+        elif data.startswith("lnsi:"):
+            _, i, sid = data.split(":")
+            self._ln_info(chat, mid, int(i), sid)
+        elif data.startswith("lnsu:"):
+            _, i, sid, step = data.split(":")
+            self._ln_op(chat, mid, int(i), sid, step)
+        elif data.startswith("lnok:"):
+            _, i, sid, step = data.split(":")
+            self._ln_do(chat, mid, int(i), sid, step)
+        elif data == "rem":
+            self._rem_home(chat, mid)
+        elif data == "remtxt":
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "rem_text", "target": None}, 600)
+            self._show(chat, mid, "✍️ متن یادآور را بفرستید:",
+                       [[btn("🔙 بازگشت", "rem"),
+                         btn("🏠 خانه", "menu")]])
+        elif data == "remnote":
+            pend = self.store.get_json(f"pend:{chat}", {}) or {}
+            target = pend.get("target") if pend.get("type") == "rem_text" \
+                else None
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "rem_when", "target": target,
+                                 "text": ""}, 900)
+            self._show(chat, mid, REM_WHEN_TEXT, _rem_when_kb())
+        elif data == "remdel":
+            self._rem_del_list(chat, mid)
+        elif data.startswith("remdx:"):
+            self._rem_del_ask(chat, mid, data[6:])
+        elif data.startswith("remdy:"):
+            self._rem_del_do(chat, mid, data[6:])
         elif data.startswith("cfz:"):
             _, acc, zid = data.split(":")
             self._cf_records(chat, mid, int(acc), zid, 0)
@@ -978,8 +1041,334 @@ class Router:
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
+        elif pend.get("type") == "ln_add_name":
+            name = text.replace(" ", "")
+            if not name:
+                self.bot.send(chat, "❌ نام معتبر نیست.")
+                return
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "ln_add_token", "name": name}, 600)
+            self.bot.send(chat, "🔑 توکن API لینود را بفرستید:")
+        elif pend.get("type") == "ln_add_token":
+            tok = text.strip()
+            try:
+                acc = Ln(tok).call("/account")
+                if not acc.get("email") and not acc.get("id"):
+                    raise LnError("invalid")
+            except LnError as e:
+                self.bot.send(chat, f"❌ توکن نامعتبر است: {esc(e)}")
+                return
+            accs = self._ln_accs()
+            accs.append({"name": pend.get("name", "ln"), "token": tok})
+            self.store.put_json("ln_accounts", accs)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ اکانت لینود اضافه شد.")
+            self._ln_home(chat, 0)
+        elif pend.get("type") == "ln_srv_rename":
+            try:
+                Ln(self._ln_accs()[pend["acc"]]["token"]).call(
+                    f'/linode/instances/{pend["sid"]}', "PUT",
+                    {"label": text.strip()})
+                self.bot.send(chat, "✅ نام سرور تغییر کرد.")
+            except (LnError, IndexError, KeyError) as e:
+                self.bot.send(chat, f"❌ نشد: {esc(e)}")
+                return
+            self.store.delete(f"pend:{chat}")
+            self._ln_info(chat, 0, pend["acc"], pend["sid"])
+        elif pend.get("type") == "rem_text":
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "rem_when",
+                                 "target": pend.get("target"),
+                                 "text": text.strip()}, 900)
+            self.bot.send(chat, REM_WHEN_TEXT,
+                          _rem_when_kb())
+        elif pend.get("type") == "rem_when":
+            try:
+                at = parse_jalali_datetime(text.strip())
+            except ValueError:
+                self.bot.send(chat,
+                              "❌ قالب درست نیست. مثال: <code>1404/06/20 14:30</code>")
+                return
+            import time as _t
+            if at <= int(_t.time() * 1000):
+                self.bot.send(chat, "❌ زمان باید در آینده باشد.")
+                return
+            lst = self._rem_list()
+            import random as _r
+            rid = f"r{int(_t.time())}{_r.randint(10, 99)}"
+            lst.append({"id": rid, "text": pend.get("text") or "یادآور",
+                        "at": at, "target": pend.get("target")})
+            self.store.put_json("reminders", lst)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat,
+                          f"✅ یادآور ثبت شد.\n🕒 {fmt_jalali(at)}",
+                          [[btn("⏰ یادآورها", "rem"),
+                            btn("🔙 بازگشت", "menu")]])
         else:
             self.store.delete(f"pend:{chat}")
+
+    # ---------- Linode ----------
+
+    def _ln_accs(self) -> list:
+        accs = self.store.get_json("ln_accounts", [])
+        return accs if isinstance(accs, list) else []
+
+    def _ln_sel(self) -> int:
+        accs = self._ln_accs()
+        try:
+            i = int(self.store.get("ln_sel") or 0)
+            if 0 <= i < len(accs):
+                return i
+        except (ValueError, TypeError):
+            pass
+        return 0
+
+    def _ln_home(self, chat: int, mid: int = 0) -> None:
+        accs = self._ln_accs()
+        if not accs:
+            self._show(chat, mid, "🟢 لینود\n\nاکانتی نیست؛ اضافه کن:",
+                       [[btn("➕ افزودن اکانت", "lna")],
+                        [btn("🏠 خانه", "menu")]])
+            return
+        sel = self._ln_sel()
+        kb = []
+        lines = ["🟢 لینود", ""]
+        if len(accs) > 1:
+            acc_btns = [btn(f'{"✅ " if i == sel else "👤 "}{a["name"]}',
+                             f"lnm:{i}") for i, a in enumerate(accs)]
+            kb.extend(grid2(acc_btns) if len(accs) == 2
+                      else grid3(acc_btns) if len(accs) == 3
+                      else grid4(acc_btns))
+        lines.append(f'«{accs[sel]["name"]}» انتخاب شده:')
+        lines.append("")
+        try:
+            servers = Ln(accs[sel]["token"]).all("/linode/instances")
+        except LnError:
+            servers = None
+        if servers is None:
+            lines.append("⚠️ لیست سرورها خوانده نشد.")
+        elif not servers:
+            lines.append("📭 سروری نیست.")
+        else:
+            for s in servers[:20]:
+                kb.append([btn(list_text(s), f'lnsi:{sel}:{s["id"]}',
+                               "plain")])
+        multi = len(accs) > 1
+        nm = accs[sel]["name"]
+        kb.append([btn("⚙️ تنظیمات" + (f" ({nm})" if multi else ""),
+                     f"lnacc:{sel}")])
+        kb.append([btn("🔙 بازگشت", "menu"),
+                   btn("👤 اکانت‌ها", "lnaccs"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _ln_acc_settings(self, chat: int, mid: int, i: int) -> None:
+        try:
+            acc = self._ln_accs()[i]
+        except IndexError:
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        tok = acc.get("token", "")
+        masked = (tok[:8] + "…" + tok[-4:]) if len(tok) > 14 else "—"
+        self._show(chat, mid,
+                   f'⚙️ تنظیمات کلاینت\n\n👤 نام: <code>{esc(acc.get("name"))}</code>\n'
+                   f"🔑 توکن: <code>{esc(masked)}</code>",
+                   [[btn("🗑 حذف اکانت", f"lnd:{i}")],
+                    [btn("🔙 بازگشت", "ln"),
+                     btn("🏠 خانه", "menu")]])
+
+    def _ln_accs_menu(self, chat: int, mid: int = 0) -> None:
+        self._show(chat, mid, "👤 اکانت‌های لینود:",
+                   [[btn("➕ افزودن اکانت", "lna")]] +
+                   ([[btn("🗑 حذف اکانت", "lndel")]] if self._ln_accs()
+                    else []) +
+                   [[btn("🔙 بازگشت", "ln"), btn("🏠 خانه", "menu")]])
+
+    def _ln_del_list(self, chat: int, mid: int = 0) -> None:
+        accs = self._ln_accs()
+        kb = [[btn(f'🗑 {a["name"]}', f'lnd:{i}')]
+              for i, a in enumerate(accs)]
+        kb.append([btn("🔙 بازگشت", "ln")])
+        self._show(chat, mid, "🗑 کدام اکانت حذف شود؟", kb)
+
+    def _ln_del_ask(self, chat: int, mid: int, idx: str) -> None:
+        try:
+            name = self._ln_accs()[int(idx)]["name"]
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        self._show(chat, mid, f'⚠️ اکانت «{esc(name)}» حذف شود؟',
+                   [[btn("✅ بله", f"lndy:{idx}"),
+                     btn("❌ انصراف", "lndel")]])
+
+    def _ln_del_do(self, chat: int, mid: int, idx: str) -> None:
+        accs = self._ln_accs()
+        try:
+            accs.pop(int(idx))
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        self.store.put_json("ln_accounts", accs)
+        self.bot.send(chat, "✅ اکانت حذف شد.")
+        self._ln_home(chat, 0)
+
+    def _ln_servers(self, chat: int, mid: int, i: int, pg: int) -> None:
+        try:
+            acc = self._ln_accs()[i]
+            servers = Ln(acc["token"]).all("/linode/instances")
+        except (IndexError, LnError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        per, pages = 10, max(1, (len(servers) + 9) // 10)
+        pg = max(0, min(pg, pages - 1))
+        kb = [[btn(list_text(s), f'lnsi:{i}:{s["id"]}', "plain")]
+              for s in servers[pg * per:(pg + 1) * per]]
+        if pages > 1:
+            kb.append([btn("◀️", f"lns:{i}:{pg - 1}") if pg > 0
+                       else EMPTY_BTN,
+                       btn(f"📄 {pg + 1}/{pages}", "noop"),
+                       btn("▶️", f"lns:{i}:{pg + 1}") if pg < pages - 1
+                       else EMPTY_BTN])
+        kb.append([btn("🔙 بازگشت", "ln"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   f'🖥 سرورهای «{esc(acc["name"])}» ({len(servers)}):', kb)
+
+    def _ln_info(self, chat: int, mid: int, i: int, sid: str) -> None:
+        try:
+            ln = Ln(self._ln_accs()[i]["token"])
+            s = ln.call(f"/linode/instances/{sid}")
+        except (IndexError, LnError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        if not s.get("id"):
+            self._show(chat, mid, "❌ سرور پیدا نشد.", home_kb())
+            return
+        specs = s.get("specs") or {}
+        ip4 = (s.get("ipv4") or ["—"])[0]
+        try:
+            tr = ln.call(f"/linode/instances/{sid}/transfer")
+            used = tr.get("used") if isinstance(tr, dict) else None
+            quota = tr.get("quota") if isinstance(tr, dict) else None
+            bill = tr.get("billable") if isinstance(tr, dict) else None
+        except LnError:
+            used = quota = bill = None
+        text = (
+            f'🚀 <code>{esc(s.get("label"))}</code> '
+            f'[<code>{esc(s.get("status"))}</code>]\n\n'
+            f"🔗 IPv4: <code>{esc(ip4)}</code>\n"
+            f"🔗 IPv6: <code>{esc(s.get('ipv6') or '—')}</code>\n"
+            f'🌍 منطقه: <code>{esc(s.get("region"))}</code>\n'
+            f'⚙️ مشخصات: <code>{esc(specs.get("vcpus", "?"))} هسته / '
+            f'{gb(specs.get("memory", 0) * 1024 * 1024)}GB رم / '
+            f'{gb(specs.get("disk", 0) * 1024 * 1024)}GB دیسک</code>\n'
+            f'🖼️ تصویر: <code>{esc(s.get("image") or "—")}</code>\n'
+            f"📊 ترافیک (GB):\n"
+            f' • مصرف: <code>{esc("—" if used is None else round(used / 1024**3, 2))}</code>\n'
+            f' • سهمیه: <code>{esc("—" if quota is None else round(quota / 1024**3, 2))}</code>\n'
+            f' • مازاد: <code>{esc("—" if bill is None else round(bill / 1024**3, 2))}</code>')
+        kb = grid2([
+            btn("⚡ روشن", f"lnsu:{i}:{sid}:on"),
+            btn("🔌 خاموش", f"lnsu:{i}:{sid}:off"),
+            btn("🔄 ریبوت", f"lnsu:{i}:{sid}:reboot"),
+            btn("✏️ تغییر نام", f"lnsu:{i}:{sid}:rename"),
+            btn("🗑 حذف سرور", f"lnsu:{i}:{sid}:del", "danger"),
+        ])
+        kb.append([btn("🔙 بازگشت", f"lns:{i}:0"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, text, kb)
+
+    def _ln_op(self, chat: int, mid: int, i: int, sid: str, step: str) -> None:
+        back = f"lnsi:{i}:{sid}"
+        if step == "rename":
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "ln_srv_rename", "acc": i,
+                                 "sid": sid}, 600)
+            self._show(chat, mid, "✏️ نام جدید سرور را بفرستید:",
+                       [[btn("🔙 انصراف", back)]])
+            return
+        label = {"on": "روشن کردن", "off": "خاموش کردن",
+                 "reboot": "ریبوت", "del": "حذف سرور"}.get(step)
+        if not label:
+            self.bot.answer("", "")
+            self._show(chat, mid, "⏳ در نسخه سروری به‌زودی", home_kb())
+            return
+        self._show(chat, mid, f"⚠️ مطمئنید «{label}» انجام شود؟",
+                   [[btn("✅ بله", f"lnok:{i}:{sid}:{step}"),
+                     btn("❌ انصراف", back)]])
+
+    def _ln_do(self, chat: int, mid: int, i: int, sid: str, step: str) -> None:
+        back = [[btn("🔙 بازگشت", f"lnsi:{i}:{sid}"),
+                 btn("🏠 خانه", "menu")]]
+        try:
+            ln = Ln(self._ln_accs()[i]["token"])
+        except IndexError:
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        try:
+            if step == "del":
+                ln.call(f"/linode/instances/{sid}", "DELETE")
+                self.bot.send(chat, "✅ سرور حذف شد.")
+                self._ln_servers(chat, 0, i, 0)
+            elif step in ("on", "off", "reboot"):
+                ln.call(f"/linode/instances/{sid}/"
+                        f'{"boot" if step == "on" else "shutdown" if step == "off" else "reboot"}',
+                        "POST", {})
+                self.bot.send(chat, "✅ دستور ارسال شد.")
+                self._ln_info(chat, 0, i, sid)
+            else:
+                self._show(chat, mid, "❓ عملیات ناشناخته.", back)
+        except LnError as e:
+            self._show(chat, mid, f"❌ خطا: {esc(e)}", back)
+
+    # ---------- Reminders ----------
+
+    def _rem_list(self) -> list:
+        lst = self.store.get_json("reminders", [])
+        return lst if isinstance(lst, list) else []
+
+    def _rem_home(self, chat: int, mid: int = 0) -> None:
+        lst = self._rem_list()
+        lines = ["⏰ یادآورها", ""]
+        kb = []
+        if not lst:
+            lines.append("📭 یادآوری نیست.")
+        for r in lst[:20]:
+            kb.append([btn(f'🔔 {r.get("text", "—")[:28]}', "rem",
+                           "plain")])
+        kb.append([btn("➕ یادآور جدید", "remtxt")])
+        if lst:
+            kb.append([btn("🗑 حذف", "remdel")])
+        kb.append([btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _rem_del_list(self, chat: int, mid: int = 0) -> None:
+        lst = self._rem_list()
+        kb = [[btn(f'🗑 {r.get("text", "—")[:28]}', f'remdx:{r.get("id")}')]
+              for r in lst[:20]]
+        kb.append([btn("🔙 بازگشت", "rem")])
+        self._show(chat, mid, "🗑 کدام حذف شود؟", kb)
+
+    def _rem_del_ask(self, chat: int, mid: int, rid: str) -> None:
+        self._show(chat, mid, "⚠️ حذف شود؟",
+                   [[btn("✅ بله", f"remdy:{rid}"),
+                     btn("❌ انصراف", "remdel")]])
+
+    def _rem_del_do(self, chat: int, mid: int, rid: str) -> None:
+        self.store.put_json("reminders",
+                            [r for r in self._rem_list()
+                             if str(r.get("id")) != str(rid)])
+        self.bot.send(chat, "✅ حذف شد.")
+        self._rem_home(chat, 0)
+
+    def rem_due(self, now_ms: int) -> list:
+        due = [r for r in self._rem_list()
+               if r.get("at") and r["at"] <= now_ms]
+        if due:
+            ids = {str(r.get("id")) for r in due}
+            self.store.put_json("reminders",
+                                [r for r in self._rem_list()
+                                 if str(r.get("id")) not in ids])
+        return due
 
     # ---------- Passargad panels ----------
 
@@ -1558,3 +1947,13 @@ class Router:
             self._show(chat, mid, "❓ عملیات ناشناخته.", back)
         except HzError as e:
             self._show(chat, mid, f"❌ خطا: {esc(e)}", back)
+REM_WHEN_TEXT = ("🕒 زمان یادآور:\nتاریخ شمسی و ساعت را بفرستید.\n"
+                     "مثال: <code>1404/06/20 14:30</code>")
+
+
+def _rem_when_kb() -> list:
+    return [[btn("🔙 بازگشت", "rem"), btn("🏠 خانه", "menu")]]
+
+
+class _LnHzRouterMixin:
+    pass
