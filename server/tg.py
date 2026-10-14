@@ -1,19 +1,24 @@
 """Minimal Telegram Bot API client (stdlib only).
 
 Long-polling receiver + send/edit helpers. No third-party deps so the
-server install stays lean. All network calls have timeouts and raise
-BotError on Telegram-level failures.
+server install stays lean. Every network call runs in a daemon thread
+with a hard join-timeout, so even a DNS/connect stall (getaddrinfo is
+NOT bounded by socket timeouts) can never freeze the bot; it just
+logs and moves on.
 """
 from __future__ import annotations
 
 import json
-import time
+import threading
 import urllib.parse
 import urllib.request
 
 
 class BotError(Exception):
     pass
+
+
+CALL_TIMEOUT = 40
 
 
 class Bot:
@@ -23,7 +28,7 @@ class Bot:
         self._base = f"https://api.telegram.org/bot{token}"
         self._timeout = timeout
 
-    def call(self, method: str, params: dict | None = None):
+    def _raw(self, method: str, params: dict | None = None):
         data = urllib.parse.urlencode(params or {}).encode()
         req = urllib.request.Request(
             f"{self._base}/{method}", data=data,
@@ -38,11 +43,29 @@ class Bot:
             raise BotError(f"{method}: {body}")
         return body.get("result")
 
+    def call(self, method: str, params: dict | None = None,
+             timeout: int = CALL_TIMEOUT):
+        # hard timeout even against DNS/connect stalls
+        out: dict = {}
+        def _run():
+            try:
+                out["r"] = self._raw(method, params)
+            except Exception as e:
+                out["e"] = e
+        th = threading.Thread(target=_run, daemon=True)
+        th.start()
+        th.join(timeout=timeout)
+        if th.is_alive():
+            raise BotError(f"{method}: stall>={timeout}s")
+        if "e" in out:
+            raise out["e"]
+        return out.get("r")
+
     def get_updates(self, offset: int = 0, poll_sec: int = 50) -> list:
         return self.call("getUpdates", {
             "offset": offset, "timeout": poll_sec,
             "allowed_updates": json.dumps(["message", "callback_query"]),
-        }) or []
+        }, timeout=poll_sec + 20) or []
 
     def send(self, chat_id: int, text: str, kb: list | None = None,
              parse: str = "HTML") -> dict:

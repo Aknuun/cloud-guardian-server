@@ -61,6 +61,8 @@ ExecStart=/usr/bin/python3 $DST/app.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
