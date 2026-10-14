@@ -12,6 +12,7 @@ import html
 
 from cf import Cf, CfError
 from hz import Hz, HzError, status_emoji
+from pg import Pg, PgError, gb, pct, days_left
 from store import Store
 from tg import Bot
 
@@ -130,6 +131,33 @@ class Router:
         elif data.startswith("hzdelok:"):
             _, i, sid = data.split(":")
             self._hz_del_server(chat, mid, int(i), sid)
+        elif data == "pg":
+            self._pg_home(chat, mid)
+        elif data == "pga":
+            self.store.put_json(f"pend:{chat}", {"type": "pg_add_url"}, 600)
+            self._show(chat, mid, "🔗 آدرس پنل را بفرستید (مثل https://panel.example.com):",
+                       [[btn("🔙 بازگشت", "pg"), btn("🏠 خانه", "menu")]])
+        elif data == "pgdel":
+            self._pg_del_list(chat, mid)
+        elif data.startswith("pgd:"):
+            self._pg_del_ask(chat, mid, data[4:])
+        elif data.startswith("pgdy:"):
+            self._pg_del_do(chat, mid, data[5:])
+        elif data.startswith("pgl:"):
+            _, i, pg = data.split(":")
+            self._pg_users(chat, mid, int(i), int(pg), "")
+        elif data.startswith("pgu:"):
+            self._pg_user(chat, mid, int(data[4:]))
+        elif data == "pgq":
+            sess = self.store.get_json(f"s:{chat}", {}) or {}
+            if "panel" not in sess:
+                self._show(chat, mid, "اول یک پنل را باز کن.", home_kb())
+            else:
+                self.store.put_json(f"pend:{chat}",
+                                    {"type": "pg_search",
+                                     "panel": sess["panel"]}, 600)
+                self._show(chat, mid, "🔍 بخشی از یوزرنیم را بفرستید:",
+                           [[btn("❌ انصراف", f'pgl:{sess["panel"]}:0')]])
         elif data == "cf":
             self._cf_zones(chat, mid)
         elif data.startswith("cfz:"):
@@ -202,6 +230,7 @@ class Router:
         kb = [
             [btn("☁️ کلودفلر", "cf")],
             [btn("🇩🇪 هتزنر", "hz")],
+            [btn("🎛 پنل پاسارگارد", "pg")],
             [btn("🏠 خانه", "menu")],
         ]
         self._show(chat, mid,
@@ -405,8 +434,148 @@ class Router:
                 return
             self.store.delete(f"pend:{chat}")
             self._hz_info(chat, 0, pend["acc"], pend["sid"])
+        elif pend.get("type") == "pg_add_url":
+            url = text.strip().rstrip("/")
+            if not (url.startswith("http://") or url.startswith("https://")):
+                self.bot.send(chat, "❌ آدرس باید با http شروع شود.")
+                return
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "pg_add_user", "url": url}, 600)
+            self.bot.send(chat, "👤 یوزر ادمین پنل را بفرستید:")
+        elif pend.get("type") == "pg_add_user":
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "pg_add_pass", "url": pend["url"],
+                                 "username": text.strip()}, 600)
+            self.bot.send(chat, "🔑 پسورد ادمین پنل را بفرستید:")
+        elif pend.get("type") == "pg_add_pass":
+            try:
+                Pg(pend["url"], pend["username"], text.strip()).login()
+            except PgError as e:
+                self.bot.send(chat, f"❌ ورود ناموفق: {esc(e)}")
+                return
+            panels = self._pg_panels()
+            panels.append({"url": pend["url"], "username": pend["username"],
+                           "password": text.strip(),
+                           "name": pend["url"].split("//")[-1].split("/")[0]})
+            self.store.put_json("panels", panels)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ پنل اضافه شد.")
+            self._pg_home(chat, 0)
+        elif pend.get("type") == "pg_search":
+            self.store.delete(f"pend:{chat}")
+            self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
         else:
             self.store.delete(f"pend:{chat}")
+
+    # ---------- Passargad panels ----------
+
+    def _pg_panels(self) -> list:
+        panels = self.store.get_json("panels", [])
+        return panels if isinstance(panels, list) else []
+
+    def _pg_home(self, chat: int, mid: int = 0) -> None:
+        panels = self._pg_panels()
+        if not panels:
+            self._show(chat, mid, "🎛 پنل پاسارگارد\n\nپنلی نیست؛ اضافه کن:",
+                       [[btn("➕ افزودن پنل", "pga")],
+                        [btn("🏠 خانه", "menu")]])
+            return
+        kb = [[btn(f'📊 {p.get("name", p.get("url"))}', f'pgl:{i}:0')]
+              for i, p in enumerate(panels)]
+        kb.append([btn("➕ افزودن پنل", "pga"),
+                   btn("🗑 حذف پنل", "pgdel")])
+        kb.append([btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   f"🎛 پنل پاسارگارد ({len(panels)} پنل):", kb)
+
+    def _pg_del_list(self, chat: int, mid: int = 0) -> None:
+        panels = self._pg_panels()
+        kb = [[btn(f'🗑 {p.get("name", p.get("url"))}', f'pgd:{i}')]
+              for i, p in enumerate(panels)]
+        kb.append([btn("🔙 بازگشت", "pg")])
+        self._show(chat, mid, "🗑 کدام پنل حذف شود؟", kb)
+
+    def _pg_del_ask(self, chat: int, mid: int, idx: str) -> None:
+        try:
+            name = self._pg_panels()[int(idx)].get("name", "?")
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ پنل پیدا نشد.", home_kb())
+            return
+        self._show(chat, mid, f'⚠️ پنل «{esc(name)}» حذف شود؟',
+                   [[btn("✅ بله", f"pgdy:{idx}"),
+                     btn("❌ انصراف", "pgdel")]])
+
+    def _pg_del_do(self, chat: int, mid: int, idx: str) -> None:
+        panels = self._pg_panels()
+        try:
+            panels.pop(int(idx))
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ پنل پیدا نشد.", home_kb())
+            return
+        self.store.put_json("panels", panels)
+        self.bot.send(chat, "✅ پنل حذف شد.")
+        self._pg_home(chat, 0)
+
+    def _pg_login(self, i: int):
+        p = self._pg_panels()[i]
+        return Pg(p["url"], p["username"], p["password"]), p
+
+    def _pg_users(self, chat: int, mid: int, i: int, pg: int,
+                  q: str) -> None:
+        try:
+            pgc, p = self._pg_login(i)
+            users = pgc.users(pgc.login())
+        except (IndexError, PgError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        if q:
+            users = [u for u in users if q in u["username"].lower()]
+        per, pages = 30, max(1, (len(users) + 29) // 30)
+        pg = max(0, min(pg, pages - 1))
+        page = users[pg * per:(pg + 1) * per]
+        self.store.put_json(f"s:{chat}",
+                            {"panel": i,
+                             "users": [u["username"] for u in page]}, 3600)
+        kb = []
+        for idx, u in enumerate(page):
+            p95 = pct(u["used"], u["limit"])
+            flag = ""
+            if p95 is not None and p95 >= 95:
+                flag = "🔴 "
+            elif p95 is not None and p95 >= 80:
+                flag = "🟡 "
+            kb.append([btn(f'{flag}{u["username"]}', f"pgu:{idx}")])
+        if pages > 1:
+            kb.append([btn(f"{pg + 1}/{pages}", f"pgl:{i}:{(pg + 1) % pages}")])
+        kb.append([btn("🔍 جستجو", "pgq"),
+                   btn("🔙 بازگشت", "pg")])
+        kb.append([btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   f'👥 کاربران «{esc(p.get("name"))}» '
+                   f"({len(users)} نفر):", kb)
+
+    def _pg_user(self, chat: int, mid: int, idx: int) -> None:
+        sess = self.store.get_json(f"s:{chat}", {}) or {}
+        try:
+            uname = (sess.get("users") or [])[idx]
+            pgc, p = self._pg_login(sess["panel"])
+            d = pgc.user(pgc.login(), uname) or {}
+        except (IndexError, KeyError, TypeError, PgError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        u = d.get("username", uname)
+        used = float(d.get("used_traffic") or 0)
+        lim = float(d.get("data_limit") or 0)
+        p95 = pct(used, lim)
+        dl = days_left(d.get("expire", d.get("expire_date")))
+        txt = (f"👤 <code>{esc(u)}</code>\n"
+               f"وضعیت: {esc(d.get('status', '—'))}\n"
+               f"مصرف: {gb(used)} / {gb(lim) if lim else '∞'} گیگ"
+               f'{f" ({p95}٪)" if p95 is not None else ""}\n'
+               f'انقضا: {f"{dl} روز" if dl is not None else "—"}')
+        self._show(chat, mid, txt,
+                   [[btn("🔙 بازگشت", f'pgl:{sess["panel"]}:0')],
+                    [btn("🏠 خانه", "menu")]])
 
     # ---------- Hetzner ----------
 
