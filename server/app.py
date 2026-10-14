@@ -24,17 +24,62 @@ HEALTH_PORT = 8787
 
 
 class _Health(BaseHTTPRequestHandler):
+    store = None
+    bot = None
+    admin_id = 0
+    router = None
+
+    def _json(self, code: int, obj) -> None:
+        import json as _j
+        body = _j.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
         if self.path != "/health":
             self.send_response(404)
             self.end_headers()
             return
-        body = json.dumps({"ok": True, "ts": int(time.time())}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._json(200, {"ok": True, "ts": int(time.time())})
+
+    def do_POST(self):
+        # وبهوک هشدار پنل: /pghook/<secret>
+        if not self.path.startswith("/pghook/"):
+            self.send_response(404)
+            self.end_headers()
+            return
+        try:
+            ln = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(max(0, min(ln, 1 << 20))).decode(
+                "utf-8", "replace")
+            import json as _j
+            payload = _j.loads(raw) if raw else {}
+        except Exception:
+            return self._json(400, {"ok": False})
+        try:
+            import alerts as _al
+            secret = self.path.rsplit("/", 1)[-1]
+            panels = (self.router._pg_panels()
+                      if self.router else [])
+            cfg = _al.get_cfg(self.store)
+            hit = None
+            for p in panels:
+                pc = (cfg.get("panels") or {}).get(str(p.get("url"))) or {}
+                if pc.get("secret") == secret:
+                    hit = p
+                    break
+            if hit is None:
+                return self._json(403, {"ok": False})
+            n = _al.handle_events(self.bot, self.store, hit,
+                                  str(hit.get("url")), payload,
+                                  self.admin_id)
+            return self._json(200, {"ok": True, "buffered": n})
+        except Exception as e:
+            print(f"pghook: {e}", flush=True)
+            return self._json(500, {"ok": False})
 
     def log_message(self, *a):
         pass
@@ -57,6 +102,10 @@ def main() -> None:
     signal.signal(signal.SIGINT, _sig)
 
     srv = HTTPServer(("0.0.0.0", HEALTH_PORT), _Health)
+    _Health.store = store
+    _Health.bot = bot
+    _Health.admin_id = int(cfg["admin_id"])
+    _Health.router = router
     threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 1},
                      daemon=True).start()
 
@@ -68,6 +117,7 @@ def main() -> None:
         print(f"getMe failed: {e}", flush=True)
 
     offset, last_purge, last_sync = 0, 0, 0
+    last_flush, last_digest_u, last_digest_d = 0, 0, 0
     import queue as _q
 
     def _poll(out: _q.Queue, off: int) -> None:
@@ -106,6 +156,29 @@ def main() -> None:
                          f'⏰ یادآور\n\n{r.get("text", "—")}')
         except Exception as e:
             print(f"remind: {e}", flush=True)
+        try:
+            import alerts as _al
+            from pg import Pg as _Pg
+            now = time.time()
+            panels = router._pg_panels()
+            pmap = {str(p.get("url")): p for p in panels}
+            if now - last_flush > 60:
+                _al.flush_buffers(bot, store, pmap, int(cfg["admin_id"]))
+                last_flush = now
+            if now - last_digest_u > 3600:
+                _al.run_digest(bot, store, panels, "usage",
+                               int(cfg["admin_id"]),
+                               lambda p: _Pg(p["url"], p["username"],
+                                             p["password"]))
+                last_digest_u = now
+            if now - last_digest_d > 86400:
+                _al.run_digest(bot, store, panels, "days",
+                               int(cfg["admin_id"]),
+                               lambda p: _Pg(p["url"], p["username"],
+                                             p["password"]))
+                last_digest_d = now
+        except Exception as e:
+            print(f"alerts: {e}", flush=True)
         if time.time() - last_purge > 3600:
             try:
                 store.purge()

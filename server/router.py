@@ -301,11 +301,27 @@ class Router:
                 self.store.put_json(f"pend:{chat}", {"type": "zsearch"}, 600)
                 self._show(chat, mid, "🔍 بخشی از نام یا مقدار رکورد را بفرستید:",
                            [[btn("❌ انصراف", "zones")]])
-        elif data in ("noop", "arvan", "hf", "nd", "pghook", "um",
+        elif data in ("noop", "arvan", "hf", "nd", "um",
                       "srv", "dommon", "fmail", "lb", "settings",
                       "zset", "selmode", "zmail", "ztraf", "cref", "rtraf"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
+        elif data == "pghook":
+            self._pghook_home(chat, mid)
+        elif data == "pgon":
+            import alerts as _al
+            cfg = _al.get_cfg(self.store)
+            cfg["enabled"] = True
+            _al.save_cfg(self.store, cfg)
+            self._pghook_home(chat, mid)
+        elif data == "pgoff":
+            import alerts as _al
+            cfg = _al.get_cfg(self.store)
+            cfg["enabled"] = False
+            _al.save_cfg(self.store, cfg)
+            self._pghook_home(chat, mid)
+        elif data.startswith("pgtest:"):
+            self._pghook_test(chat, mid, int(data[7:]))
         elif data == "ln":
             self._ln_home(chat, mid)
         elif data == "lna":
@@ -1106,6 +1122,54 @@ class Router:
                             btn("🔙 بازگشت", "menu")]])
         else:
             self.store.delete(f"pend:{chat}")
+
+    # ---------- Expiry/volume alerts ----------
+
+    def _pghook_home(self, chat: int, mid: int = 0) -> None:
+        import alerts as _al
+        import secrets as _secrets
+        cfg = _al.get_cfg(self.store)
+        panels = self._pg_panels()
+        lines = ["🔔 هشدار انقضا و حجم", "",
+                 f'وضعیت: {"روشن ✅" if cfg["enabled"] else "خاموش ⛔"}',
+                 f'آستانه حجم: {", ".join(str(x) for x in cfg["usage"])}٪',
+                 f'آستانه انقضا: {", ".join(str(x) for x in cfg["days"])} روز',
+                 ""]
+        kb = []
+        for i, p in enumerate(panels):
+            pid = str(p.get("url"))
+            pcfg = (cfg.get("panels") or {}).get(pid) or {}
+            if not pcfg.get("secret"):
+                pcfg["secret"] = _secrets.token_hex(12)
+                cfg.setdefault("panels", {})[pid] = pcfg
+            kb.append([btn(f'🧪 تست «{p.get("name") or pid}»',
+                           f"pgtest:{i}")])
+            lines.append(f'• {p.get("name") or pid}\n'
+                         f'  <code>/pghook/{pcfg["secret"]}</code>')
+        _al.save_cfg(self.store, cfg)
+        kb.append([btn("⏸ خاموش" if cfg["enabled"] else "▶️ روشن",
+                       "pgoff" if cfg["enabled"] else "pgon")])
+        kb.append([btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _pghook_test(self, chat: int, mid: int, i: int) -> None:
+        import alerts as _al
+        try:
+            p = self._pg_panels()[i]
+        except IndexError:
+            self._show(chat, mid, "❌ پنل پیدا نشد.", home_kb())
+            return
+        cfg = _al.get_cfg(self.store)
+        pcfg = (cfg.get("panels") or {}).get(str(p.get("url")), {})
+        try:
+            _al.send_alert(self.bot, chat,
+                           {"name": p.get("name"), "url": p.get("url"),
+                            "renewbot": pcfg.get("renewbot", "")},
+                           [{"username": "testuser", "kind": "usage",
+                             "value": 95.5, "expireTs": None,
+                             "status": "active", "owner": ""}], test=True)
+        except Exception as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
 
     # ---------- Linode ----------
 
