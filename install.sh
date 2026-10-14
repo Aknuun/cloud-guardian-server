@@ -13,13 +13,21 @@ cp "$SRC/server/"*.py "$DST/"
 chmod 600 "$DST"/*.py 2>/dev/null || true
 
 echo "== Cloud Guardian server setup =="
-read -rp "Bot token (from @BotFather): " BOT_TOKEN
-read -rp "Admin numeric Telegram ID: " ADMIN_ID
-read -rp "Cloudflare API token (Enter to skip): " CF_TOKEN
-read -rp "Hetzner API token (Enter to skip): " HZ_TOKEN
-read -rp "Failover: CF account ID (Enter to skip failover): " CF_ACCOUNT
-read -rp "Failover: KV namespace ID: " FO_NS
-read -rp "Failover: CF API token with KV+Workers rights: " CF_API_TOKEN
+echo "(هر کدام که از قبل در محیط ست شده باشد پرسیده نمی‌شود)"
+BOT_TOKEN="${CG_BOT_TOKEN:-}"
+ADMIN_ID="${CG_ADMIN_ID:-}"
+CF_TOKEN="${CG_CF_TOKEN:-}"
+HZ_TOKEN="${CG_HZ_TOKEN:-}"
+CF_ACCOUNT="${CG_CF_ACCOUNT:-}"
+FO_NS="${CG_FO_NS:-}"
+CF_API_TOKEN="${CG_CF_API_TOKEN:-}"
+[[ -n "$BOT_TOKEN" ]] || read -rp "Bot token (از @BotFather بگیرید و اینجا بدهید): " BOT_TOKEN
+[[ -n "$ADMIN_ID" ]] || read -rp "Admin numeric Telegram ID (آیدی عددی ادمین): " ADMIN_ID
+[[ -n "$CF_TOKEN" ]] || read -rp "Cloudflare API token (Enter to skip): " CF_TOKEN
+[[ -n "$HZ_TOKEN" ]] || read -rp "Hetzner API token (Enter to skip): " HZ_TOKEN
+[[ -n "$CF_ACCOUNT" ]] || read -rp "Failover: CF account ID (Enter to skip failover): " CF_ACCOUNT
+[[ -n "$FO_NS" ]] || read -rp "Failover: KV namespace ID: " FO_NS
+[[ -n "$CF_API_TOKEN" ]] || read -rp "Failover: CF API token with KV+Workers rights: " CF_API_TOKEN
 
 cat > "$DST/config.json" <<EOF
 {
