@@ -46,7 +46,8 @@ def main() -> None:
     store = Store(DB)
     bot = Bot(cfg["bot_token"])
     cf = Cf(cfg.get("cf_token", ""))
-    router = Router(bot, store, cf, int(cfg["admin_id"]))
+    router = Router(bot, store, cf, int(cfg["admin_id"]),
+                    cfg.get("cf_token", ""))
 
     stop = threading.Event()
 
