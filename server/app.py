@@ -117,7 +117,14 @@ def main() -> None:
         print(f"getMe failed: {e}", flush=True)
 
     offset, last_purge, last_sync = 0, 0, 0
-    last_flush, last_digest_u, last_digest_d = 0, 0, 0
+    _boot = time.time()
+    try:
+        _meta = store.get_json("sched_meta", {}) or {}
+    except Exception:
+        _meta = {}
+    last_flush = float(_meta.get("flush", _boot))
+    last_digest_u = float(_meta.get("digest_u", _boot))
+    last_digest_d = float(_meta.get("digest_d", _boot))
     import queue as _q
 
     def _poll(out: _q.Queue, off: int) -> None:
@@ -177,6 +184,13 @@ def main() -> None:
                                lambda p: _Pg(p["url"], p["username"],
                                              p["password"]))
                 last_digest_d = now
+            try:
+                store.put_json("sched_meta",
+                               {"flush": last_flush,
+                                "digest_u": last_digest_u,
+                                "digest_d": last_digest_d})
+            except Exception:
+                pass
         except Exception as e:
             print(f"alerts: {e}", flush=True)
         if time.time() - last_purge > 3600:
