@@ -61,6 +61,7 @@ ExecStart=/usr/bin/python3 $DST/app.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=15
+UMask=0077
 StandardOutput=journal
 StandardError=journal
 
