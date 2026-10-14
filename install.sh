@@ -60,6 +60,7 @@ WorkingDirectory=$DST
 ExecStart=/usr/bin/python3 $DST/app.py
 Restart=always
 RestartSec=5
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target

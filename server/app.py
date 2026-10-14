@@ -67,17 +67,38 @@ def main() -> None:
         print(f"getMe failed: {e}", flush=True)
 
     offset, last_purge, last_sync = 0, 0, 0
-    while not stop.is_set():
+    import queue as _q
+
+    def _poll(out: _q.Queue, off: int) -> None:
+        # در thread جدا تا stall شبکه (حتی DNS) حلقه اصلی را قفل نکند
         try:
-            for u in bot.get_updates(offset):
+            out.put(("ok", bot.get_updates(off, poll_sec=30)))
+        except Exception as e:
+            out.put(("err", e))
+
+    while not stop.is_set():
+        box: _q.Queue = _q.Queue(maxsize=1)
+        th = threading.Thread(target=_poll, args=(box, offset), daemon=True)
+        th.start()
+        th.join(timeout=75)
+        if th.is_alive():
+            print("poll: stall, skip tick", flush=True)
+            time.sleep(2)
+            continue
+        kind, payload = box.get()
+        if kind == "err":
+            print(f"poll: {payload}", flush=True)
+            time.sleep(5)
+            continue
+        try:
+            for u in payload:
                 offset = max(offset, int(u.get("update_id", 0)) + 1)
                 try:
                     router.handle(u)
                 except Exception as e:
                     print(f"handle: {e}", flush=True)
-        except BotError as e:
-            print(f"poll: {e}", flush=True)
-            time.sleep(5)
+        except Exception as e:
+            print(f"dispatch: {e}", flush=True)
         if time.time() - last_purge > 3600:
             try:
                 store.purge()
