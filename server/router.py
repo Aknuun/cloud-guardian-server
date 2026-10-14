@@ -61,8 +61,11 @@ def esc(s) -> str:
     return html.escape(str(s or ""), quote=False)
 
 
-def btn(text: str, data: str) -> dict:
-    return {"text": text, "callback_data": data}
+def btn(text: str, data: str, style: str = "") -> dict:
+    b = {"text": text, "callback_data": data}
+    if style:
+        b["style"] = style
+    return b
 
 
 def home_kb() -> list:
@@ -387,23 +390,23 @@ class Router:
 
     def _menu(self, chat: int, mid: int = 0) -> None:
         kb = [
-            [btn("➕ افزودن رکورد", "addrec"),
+            [btn("➕ افزودن رکورد", "addrec", "plain"),
              btn("☁️ کلودفلر", "zones"),
-             btn("🔍 جست و جو", "search")],
-            [btn("🟢 لینود", "ln"),
-             btn("🇩🇪 هتزنر", "hz"),
-             btn("🇮🇷 آروان", "arvan")],
-            [btn("🎛 پنل پاسارگارد", "pndef")],
+             btn("🔍 جست و جو", "search", "plain")],
+            [btn("🟢 لینود", "ln", "success"),
+             btn("🇩🇪 هتزنر", "hz", "success"),
+             btn("🇮🇷 آروان", "arvan", "success")],
+            [btn("🎛 پنل پاسارگارد", "pndef", "primary")],
             [btn("🧭 تعویض خودکار ساب فیلتر", "hf"),
              btn("📡 مانیتور نود پاسارگارد", "nd")],
             [btn("🔔 هشدار انقضا و حجم", "pghook"),
              btn("🔥 گزارش بد مصرف پاسارگارد", "um")],
-            [btn("🖥 سرورها و مانیتورینگ", "srv"),
-             btn("🌐 مانیتور دامنه و ترافیک‌ها", "dommon")],
-            [btn("⏰ یادآورها", "rem"),
-             btn("✉️ ایمیل دامنه", "fmail"),
-             btn("⚖️ لود بالانسر IP", "lb")],
-            [btn("⚙️ تنظیمات و راهنما و ...", "settings")],
+            [btn("🖥 سرورها و مانیتورینگ", "srv", "plain"),
+             btn("🌐 مانیتور دامنه و ترافیک‌ها", "dommon", "plain")],
+            [btn("⏰ یادآورها", "rem", "plain"),
+             btn("✉️ ایمیل دامنه", "fmail", "plain"),
+             btn("⚖️ لود بالانسر IP", "lb", "plain")],
+            [btn("⚙️ تنظیمات و راهنما و ...", "settings", "success")],
         ]
         self._show(chat, mid,
                    f"به ربات نگهبان ابری خوش اومدی ⚙️ نسخه v{VERSION}",
@@ -449,7 +452,7 @@ class Router:
             rows.append(btn(f'{"🟢" if z.get("status") == "active" else "⚪"} '
                             f'{z["name"]}', f'cfz:{z["_acc"]}:{z["id"]}'))
         kb.extend(grid2(rows))
-        kb.append([btn("⭐ ساب‌های منتخب", "favs"),
+        kb.append([btn("⭐ ساب‌های منتخب", "favs", "success"),
                    btn("📁 ✅ همه اکانت‌ها" if flt == "all"
                        else "📁 همه اکانت‌ها", "zf:all:0")])
         if len(accs) > 1:
@@ -570,10 +573,10 @@ class Router:
             [btn(f"⏱ TTL: {self._ttl_label(r.get('ttl'))}", f"cfttl:{rid}"),
              btn(f'🌐 Proxy: {"روشن" if r.get("proxied") else "خاموش"}',
                  f"cfpx:{rid}")],
-            [btn("🔗 CNAME به این", "cref"),
+            [btn("🔗 CNAME به این", "cref", "primary"),
              btn("⭐ حذف از منتخب" if faved else "⭐ افزودن به منتخب",
-                 f"favtg:{rid}")],
-            [btn("🗑 حذف", f"cfdel:{rid}"),
+                 f"favtg:{rid}", "primary")],
+            [btn("🗑 حذف", f"cfdel:{rid}", "danger"),
              btn("📊 مشاهده ترافیک", "rtraf")],
             [btn("🔙 بازگشت", "zones"),
              btn("🏠 خانه", "menu")],
