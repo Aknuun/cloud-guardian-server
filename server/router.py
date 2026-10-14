@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 
 from cf import Cf, CfError
+from arvan import Arvan, ArvanError, norm_key
 from hz import Hz, HzError, status_emoji
 from jalali import fmt_jalali, parse_jalali_datetime
 from ln import Ln, LnError, list_text
@@ -314,11 +315,60 @@ class Router:
                 self.store.put_json(f"pend:{chat}", {"type": "zsearch"}, 600)
                 self._show(chat, mid, "🔍 بخشی از نام یا مقدار رکورد را بفرستید:",
                            [[btn("❌ انصراف", "zones")]])
-        elif data in ("noop", "arvan", "hf", "nd", "um",
+        elif data in ("noop", "hf", "nd", "um",
                       "srv", "dommon", "fmail", "lb", "settings",
                       "zset", "selmode", "zmail", "ztraf", "cref", "rtraf"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
+        elif data == "arvan":
+            self._arvan_home(chat, mid)
+        elif data == "arvanacc":
+            self._arvan_accs_page(chat, mid)
+        elif data == "arvanaccadd":
+            self._show(chat, mid,
+                       "🔑 افزودن اکانت آروان\n\nکلید ماشین‌یوزر را از پنل آروان "
+                       "(Settings → IAM → Machine users) بسازید و همین‌جا بفرستید.",
+                       [[btn("❌ انصراف", "arvanacc")]])
+            self.store.put_json(f"pend:{chat}", {"type": "arvan_key"}, 600)
+        elif data.startswith("arvanaccdel:"):
+            self._arvan_acc_del_ask(chat, mid, data[12:])
+        elif data.startswith("arvanaccdelok:"):
+            self._arvan_acc_del_do(chat, mid, data[15:])
+        elif data == "arvdoms":
+            self._arvan_doms(chat, mid)
+        elif data.startswith("arvdom:"):
+            _, acc, dom = data.split(":", 2)
+            self._arvan_recs(chat, mid, int(acc), dom, 0)
+        elif data.startswith("arvrec:"):
+            _, acc, dom, rid = data.split(":", 3)
+            self._arvan_rec(chat, mid, int(acc), dom, rid)
+        elif data.startswith("arvev:"):
+            _, acc, dom, rid = data.split(":", 3)
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "arvan_value", "acc": int(acc),
+                                 "dom": dom, "rid": rid}, 900)
+            self._show(chat, mid, "✏️ مقدار جدید را بفرستید:",
+                       [[btn("❌ انصراف", "arvan")]])
+        elif data.startswith("arvdel:"):
+            _, acc, dom, rid = data.split(":", 3)
+            self._show(chat, mid, "⚠️ رکورد حذف شود؟",
+                       [[btn("✅ بله", f"arvdelok:{acc}:{dom}:{rid}"),
+                         btn("❌ انصراف", "arvan")]])
+        elif data.startswith("arvdelok:"):
+            _, acc, dom, rid = data.split(":", 3)
+            self._arvan_del_do(chat, mid, int(acc), dom, rid)
+        elif data.startswith("arvaadd:"):
+            _, acc, dom = data.split(":", 2)
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "arvan_add", "acc": int(acc),
+                                 "dom": dom}, 900)
+            self._show(chat, mid,
+                       "➕ رکورد جدید — نوع و نام و مقدار را با فاصله بفرست:\n"
+                       "<code>A sub 1.2.3.4</code>",
+                       [[btn("❌ انصراف", "arvan")]])
+        elif data.startswith("arvcloud:"):
+            _, acc, dom, rid = data.split(":", 3)
+            self._arvan_cloud(chat, mid, int(acc), dom, rid)
         elif data == "um":
             self._um_home(chat, mid)
         elif data == "um:toggle":
@@ -1162,6 +1212,50 @@ class Router:
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
+        elif pend.get("type") == "arvan_key":
+            key = norm_key(text.strip())
+            if not key:
+                self.bot.send(chat, "❌ کلید معتبر نیست.")
+                return
+            try:
+                Arvan(key).call("/domains?per_page=1")
+            except ArvanError as e:
+                self.bot.send(chat, f"❌ کلید قبول نشد:\n{esc(e)}")
+                return
+            accs = self._arvan_acc_list()
+            accs.append({"name": f'آروان {len(accs) + 1}', "token": key})
+            self.store.put_json("arvan_accounts", accs)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ اکانت اضافه شد.",
+                          [[btn("🌐 دامنه‌ها", "arvdoms"),
+                            btn("👤 اکانت‌ها", "arvanacc")]])
+        elif pend.get("type") == "arvan_value":
+            try:
+                Arvan(self._arvan_acc_list()[pend["acc"]]["token"]).call(
+                    f'/domains/{pend["dom"]}/dns-records/{pend["rid"]}',
+                    "PUT", {"value": text.strip()})
+                self.bot.send(chat, "✅ مقدار عوض شد.")
+            except (IndexError, ArvanError) as e:
+                self.bot.send(chat, f"❌ نشد: {esc(e)}")
+                return
+            self.store.delete(f"pend:{chat}")
+            self._arvan_rec(chat, 0, pend["acc"], pend["dom"], pend["rid"])
+        elif pend.get("type") == "arvan_add":
+            parts = text.split()
+            if len(parts) < 3:
+                self.bot.send(chat, "❌ قالب درست نیست.")
+                return
+            try:
+                Arvan(self._arvan_acc_list()[pend["acc"]]["token"]).call(
+                    f'/domains/{pend["dom"]}/dns-records', "POST",
+                    {"type": parts[0].upper(), "name": parts[1],
+                     "value": parts[2]})
+                self.bot.send(chat, "✅ رکورد ثبت شد.")
+            except (IndexError, ArvanError) as e:
+                self.bot.send(chat, f"❌ ثبت نشد: {esc(e)}")
+                return
+            self.store.delete(f"pend:{chat}")
+            self._arvan_recs(chat, 0, pend["acc"], pend["dom"], 0)
         elif pend.get("type") == "pg_dashpath":
             import alerts as _al
             self.store.delete(f"pend:{chat}")
@@ -1565,6 +1659,165 @@ class Router:
                              if str(m.get("id")) != str(mid_)])
         self.bot.send(chat, "✅ حذف شد.")
         self._nd_home(chat, 0)
+
+    # ---------- Arvan DNS ----------
+
+    def _arvan_acc_list(self) -> list:
+        accs = self.store.get_json("arvan_accounts", [])
+        return accs if isinstance(accs, list) else []
+
+    def _arvan_home(self, chat: int, mid: int = 0) -> None:
+        accs = self._arvan_acc_list()
+        names = "، ".join(f'<code>{esc(a.get("name"))}</code>' for a in accs) \
+            if accs else "—"
+        self._show(chat, mid,
+                   "🇮🇷 آروان کلاد\n\n"
+                   f"اکانت‌ها: {names}\n\n"
+                   "کلید ماشین‌یوزر (npanel → Settings → IAM → Machine users) "
+                   "با دسترسی‌های CDN و Cloud Server لازم است.",
+                   [[btn("🌐 دامنه‌ها (DNS)", "arvdoms")],
+                    [btn("👤 اکانت‌ها", "arvanacc"),
+                     btn("🔙 بازگشت", "menu")]])
+
+    def _arvan_accs_page(self, chat=None, mid=None):
+        accs = self._arvan_acc_list()
+        kb = []
+        for i, a in enumerate(accs):
+            kb.append([btn(f'👤 {a.get("name")}', "arvanacc",
+                           "plain"),
+                       btn("🗑", f"arvanaccdel:{i}", "danger")])
+        kb.append([btn("➕ افزودن اکانت", "arvanaccadd")])
+        kb.append([btn("🔙 بازگشت", "arvan"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   "🇮🇷 آروان — اکانت‌ها\n\nکلید را از پنل آروان "
+                   "(Settings → Machine User) بسازید.", kb)
+
+    def _arvan_acc_del_ask(self, chat: int, mid: int, idx: str) -> None:
+        try:
+            name = self._arvan_acc_list()[int(idx)]["name"]
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        self._show(chat, mid, f'⚠️ اکانت «{esc(name)}» حذف شود؟',
+                   [[btn("✅ بله، حذف کن", f"arvanaccdelok:{idx}"),
+                     btn("❌ انصراف", "arvanacc")]])
+
+    def _arvan_acc_del_do(self, chat: int, mid: int, idx: str) -> None:
+        accs = self._arvan_acc_list()
+        try:
+            accs.pop(int(idx))
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        self.store.put_json("arvan_accounts", accs)
+        self.bot.send(chat, "✅ اکانت حذف شد.")
+        self._arvan_accs_page(chat, 0)
+
+    def _arvan_doms(self, chat: int, mid: int = 0) -> None:
+        accs = self._arvan_acc_list()
+        if not accs:
+            self._show(chat, mid, "📭 اکانتی نیست.",
+                       [[btn("➕ افزودن اکانت", "arvanaccadd")],
+                        [btn("🔙 بازگشت", "arvan")]])
+            return
+        kb = []
+        for i, a in enumerate(accs):
+            try:
+                doms = Arvan(a["token"]).domains()
+            except ArvanError as e:
+                kb.append([btn(f'⚠️ {a.get("name")}: {str(e)[:30]}',
+                               "arvanacc", "plain")])
+                continue
+            for d in doms[:20]:
+                dn = d.get("name") or d.get("domain") or "?"
+                kb.append([btn(f'🇮🇷 {dn}', f"arvdom:{i}:{dn}")])
+        kb.append([btn("🔙 بازگشت", "arvan"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "🌐 دامنه‌های آروان:", kb)
+
+    def _arvan_recs(self, chat: int, mid: int, acc: int, dom: str,
+                    pg: int) -> None:
+        try:
+            recs = Arvan(self._arvan_acc_list()[acc]["token"]).records(dom)
+        except (IndexError, ArvanError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        self._cf_save_sess(chat, {"acc": f"arv{acc}", "dom": dom,
+                                  "results": {
+                                      str(r.get("id")): {"acc": acc,
+                                                         "dom": dom}
+                                      for r in recs[:100]}})
+        per, pages = 30, max(1, (len(recs) + 29) // 30)
+        pg = max(0, min(pg, pages - 1))
+        rows = []
+        for r in recs[pg * per:(pg + 1) * per]:
+            nm = str(r.get("name") or r.get("host") or "?")
+            rows.append(btn(f'{nm}-{r.get("type", "?")}',
+                            f'arvrec:{acc}:{dom}:{r.get("id")}'))
+        kb = grid3(rows)
+        kb.append([btn("➕ افزودن", f"arvaadd:{acc}:{dom}")])
+        if pages > 1:
+            kb.append([btn("◀️", f"arvdom:{acc}:{dom}") if pg > 0
+                       else EMPTY_BTN,
+                       btn(f"📄 {pg + 1}/{pages}", "noop"),
+                       EMPTY_BTN])
+        kb.append([btn("🔙 بازگشت", "arvdoms"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, f"📋 {dom} ({len(recs)} رکورد):", kb)
+
+    def _arvan_rec(self, chat: int, mid: int, acc: int, dom: str,
+                   rid: str) -> None:
+        try:
+            recs = Arvan(self._arvan_acc_list()[acc]["token"]).records(dom)
+        except (IndexError, ArvanError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        r = next((x for x in recs if str(x.get("id")) == str(rid)), None)
+        if not r:
+            self._show(chat, mid, "❌ رکورد پیدا نشد.", home_kb())
+            return
+        cloud = r.get("cloud") or r.get("cdn")
+        txt = (f'📝 <b>{esc(r.get("name") or r.get("host"))}</b>\n'
+               f'نوع: {esc(r.get("type"))}\n'
+               f'مقدار: <code>{esc(r.get("value") or r.get("content"))}</code>\n'
+               f'ابری: {"روشن" if cloud else "خاموش"}')
+        kb = [[btn("✏️ تغییر مقدار", f"arvev:{acc}:{dom}:{rid}"),
+               btn("☁️ ابری", f"arvcloud:{acc}:{dom}:{rid}")],
+              [btn("🗑 حذف", f"arvdel:{acc}:{dom}:{rid}", "danger")],
+              [btn("🔙 بازگشت", f"arvdom:{acc}:{dom}"),
+               btn("🏠 خانه", "menu")]]
+        self._show(chat, mid, txt, kb)
+
+    def _arvan_del_do(self, chat: int, mid: int, acc: int, dom: str,
+                      rid: str) -> None:
+        try:
+            Arvan(self._arvan_acc_list()[acc]["token"]).call(
+                f"/domains/{dom}/dns-records/{rid}", "DELETE")
+            self.bot.send(chat, "✅ حذف شد.")
+        except (IndexError, ArvanError) as e:
+            self._show(chat, mid, f"❌ نشد: {esc(e)}", home_kb())
+            return
+        self._arvan_recs(chat, 0, acc, dom, 0)
+
+    def _arvan_cloud(self, chat: int, mid: int, acc: int, dom: str,
+                     rid: str) -> None:
+        try:
+            cli = Arvan(self._arvan_acc_list()[acc]["token"])
+            recs = cli.records(dom)
+            r = next((x for x in recs if str(x.get("id")) == str(rid)), None)
+            if not r:
+                self._show(chat, mid, "❌ رکورد پیدا نشد.", home_kb())
+                return
+            cur = bool(r.get("cloud") or r.get("cdn"))
+            cli.call(f"/domains/{dom}/dns-records/{rid}", "PUT",
+                     {"cloud": not cur})
+            self.bot.send(chat,
+                          f'✅ ابری {"روشن" if not cur else "خاموش"} شد.')
+        except (IndexError, ArvanError) as e:
+            self._show(chat, mid, f"❌ نشد: {esc(e)}", home_kb())
+            return
+        self._arvan_rec(chat, 0, acc, dom, rid)
 
     # ---------- Linode ----------
 
