@@ -9,12 +9,36 @@ logs and moves on.
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import urllib.parse
 import urllib.request
 
 
 class BotError(Exception):
+    pass
+
+
+def _prefer_ipv4() -> None:
+    # این مسیر گاهی روی IPv6 stall می‌خورد ولی curl (eyeballs) رد می‌شود؛
+    # پس getaddrinfo را طوری می‌چینیم که IPv4 اول امتحان شود.
+    _orig = socket.getaddrinfo
+
+    def _patched(host, port, *a, **k):
+        try:
+            res = _orig(host, port, *a, **k)
+        except Exception:
+            raise
+        v4 = [r for r in res if r[0] == socket.AF_INET]
+        rest = [r for r in res if r[0] != socket.AF_INET]
+        return v4 + rest
+
+    socket.getaddrinfo = _patched
+
+
+try:
+    _prefer_ipv4()
+except Exception:
     pass
 
 
