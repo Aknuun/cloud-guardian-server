@@ -76,6 +76,44 @@ class Pg:
                 break
         return out
 
+    def users_since(self, token: str, since_iso: str) -> list:
+        out, offset = [], 0
+        for _ in range(6):
+            d = _get(f"{self.base}/api/users?online_after="
+                     f"{urllib.parse.quote(since_iso)}&limit=5000&offset={offset}",
+                     token, timeout=30)
+            arr = d.get("users") if isinstance(d, dict) else None
+            if not isinstance(arr, list) or not arr:
+                break
+            for u in arr:
+                if not isinstance(u, dict):
+                    continue
+                adm = u.get("admin")
+                owner = adm.get("username") if isinstance(adm, dict) \
+                    else (adm or "-")
+                out.append({"id": str(u.get("id") or u.get("username") or ""),
+                            "username": str(u.get("username") or ""),
+                            "used": float(u.get("used_traffic") or 0),
+                            "owner": str(owner or "-")})
+            offset += len(arr)
+        return out
+
+    def nodes(self, token: str) -> list:
+        d = _get(f"{self.base}/api/nodes", token, timeout=15)
+        arr = d if isinstance(d, list) else (d or {}).get("nodes") or \
+            (d or {}).get("items") or (d or {}).get("result") or []
+        out = []
+        for n in arr:
+            if not isinstance(n, dict):
+                continue
+            out.append({"name": str(n.get("name") or n.get("node_name")
+                                     or n.get("id") or ""),
+                        "status": str(n.get("status") or "unknown"),
+                        "address": n.get("address"),
+                        "version": n.get("xray_version") or n.get("version"),
+                        "reason": n.get("message") or n.get("error")})
+        return out
+
     def user(self, token: str, username: str) -> dict | None:
         try:
             d = _get(f"{self.base}/api/user/{urllib.parse.quote(username)}",

@@ -306,6 +306,56 @@ class Router:
                       "zset", "selmode", "zmail", "ztraf", "cref", "rtraf"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
+        elif data == "um":
+            self._um_home(chat, mid)
+        elif data == "um:toggle":
+            from monitors import um_cfg, um_save_cfg
+            cfg = um_cfg(self.store)
+            cfg["enabled"] = not cfg.get("enabled")
+            um_save_cfg(self.store, cfg)
+            self._um_home(chat, mid)
+        elif data in ("um:h", "um:d", "um:c", "um:min"):
+            fld = {"um:h": ("hourlyGb", "آستانه ساعتی (GB)"),
+                   "um:d": ("dailyGb", "آستانه روزانه (GB)"),
+                   "um:c": ("cooldownH", "فاصله تکرار هشدار (ساعت)"),
+                   "um:min": ("minGb", "حداقل مصرف اسنپ‌شات (GB)")}
+            key, label = fld[data]
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "um_num", "key": key}, 600)
+            self._show(chat, mid, f"🔢 {label} را بفرستید:",
+                       [[btn("🔙 انصراف", "um")]])
+        elif data == "um:report":
+            from monitors import um_cfg, um_save_cfg
+            cfg = um_cfg(self.store)
+            cfg["report"] = not cfg.get("report")
+            um_save_cfg(self.store, cfg)
+            self._um_home(chat, mid)
+        elif data == "nd":
+            self._nd_home(chat, mid)
+        elif data == "ndmk":
+            panels = self._pg_panels()
+            kb = [[btn(f'🖥 {p.get("name") or p.get("url")}', f"ndmk:{i}")]
+                  for i, p in enumerate(panels)]
+            kb.append([btn("🔙 بازگشت", "nd"),
+                       btn("🏠 خانه", "menu")])
+            self._show(chat, mid, "🖥 برای کدام پنل مانیتور بسازم؟", kb)
+        elif data.startswith("ndmk:"):
+            self._nd_mk_interval(chat, mid, int(data[5:]))
+        elif data.startswith("ndset:"):
+            self._nd_interval_do(chat, mid, data[6:])
+        elif data == "nddelmenu":
+            from monitors import get_node_monitors
+            mons = get_node_monitors(self.store)
+            kb = [[btn(f'🗑 {m.get("name") or m.get("id")}',
+                       f'nddel:{m.get("id")}')] for m in mons]
+            kb.append([btn("🔙 بازگشت", "nd")])
+            self._show(chat, mid, "🗑 کدام مانیتور حذف شود؟", kb)
+        elif data.startswith("nddel:"):
+            self._nd_del_ask(chat, mid, data[6:])
+        elif data.startswith("nddy:"):
+            self._nd_del_do(chat, mid, data[5:])
+        elif data.startswith("ndtg:"):
+            self._nd_toggle(chat, mid, data[5:])
         elif data == "pghook":
             self._pghook_home(chat, mid)
         elif data == "pgon":
@@ -1054,6 +1104,21 @@ class Router:
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, "✅ پنل اضافه شد.")
             self._pg_home(chat, 0)
+        elif pend.get("type") == "um_num":
+            from monitors import um_cfg, um_save_cfg
+            try:
+                v = float(text.strip())
+                if v < 0:
+                    raise ValueError
+            except ValueError:
+                self.bot.send(chat, "❌ عدد نامعتبر است.")
+                return
+            cfg = um_cfg(self.store)
+            cfg[pend.get("key", "hourlyGb")] = v
+            um_save_cfg(self.store, cfg)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ ذخیره شد.")
+            self._um_home(chat, 0)
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
@@ -1170,6 +1235,110 @@ class Router:
                              "status": "active", "owner": ""}], test=True)
         except Exception as e:
             self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+
+    # ---------- Usage monitor ----------
+
+    def _um_home(self, chat: int, mid: int = 0) -> None:
+        from monitors import um_cfg
+        cfg = um_cfg(self.store)
+        txt = "\n".join([
+            "🔥 گزارش بد مصرف پاسارگارد", "",
+            "کاربرانی که لینکشان پخش شده و بی‌رویه مصرف می‌کنند را پیدا می‌کند.",
+            "هر ۶۰ دقیقه از API پنل خوانده و با مصرف ~۱ ساعت و ~۲۴ ساعت قبل مقایسه می‌شود.",
+            "الگوی مصرف هر هشدار (پیوسته/جهشی) هم مشخص می‌شود.", "",
+            f'وضعیت: {"روشن ✅" if cfg.get("enabled") else "خاموش ❌"}',
+            f'⏱ آستانهٔ ساعتی: {cfg.get("hourlyGb")} GB',
+            f'📅 آستانهٔ روزانه: {cfg.get("dailyGb")} GB',
+            f'🔁 فاصلهٔ تکرار هشدار هر کاربر: {cfg.get("cooldownH")} ساعت',
+            f'🧮 حداقل مصرف برای اسنپ‌شات: {cfg.get("minGb")} GB',
+            f'📊 گزارش روزانهٔ اخطارشده‌ها: {"روشن ✅" if cfg.get("report") else "خاموش ❌"}',
+            "",
+            "هشدار فقط برای ادمین ارسال می‌شود. گزارش روزانه فقط کاربرانی را نشان می‌دهد که در همان روز برایشان هشدار فرستاده شده است."])
+        kb = [[btn("⏸ خاموش کن" if cfg.get("enabled") else "▶️ روشن کن",
+                   "um:toggle")],
+              [btn(f'⏱ ساعتی: {cfg.get("hourlyGb")}GB', "um:h"),
+               btn(f'📅 روزانه: {cfg.get("dailyGb")}GB', "um:d")],
+              [btn(f'🔁 فاصلهٔ هشدار: {cfg.get("cooldownH")}h', "um:c")],
+              [btn(f'🧮 حداقل اسنپ‌شات: {cfg.get("minGb")}GB', "um:min"),
+               btn("📊 گزارش: روشن" if cfg.get("report")
+                   else "📊 گزارش: خاموش", "um:report")],
+              [btn("🏠 خانه", "menu")]]
+        self._show(chat, mid, txt, kb)
+
+    # ---------- Node monitor ----------
+
+    def _nd_home(self, chat: int, mid: int = 0) -> None:
+        from monitors import get_node_monitors
+        mons = get_node_monitors(self.store)
+        lines = ["📡 مانیتور نود پاسارگارد", "",
+                 "هر پنل پاسارگاردی را ثبت کن و برایش «مانیتور نود» بساز؛ "
+                 "سپس همین‌جا وضعیت همهٔ نودها را مستقیم می‌بینی. "
+                 "اگر نودی قطع یا دوباره وصل شود، فوری خبر داده می‌شود.",
+                 "پایش خودکار با فاصلهٔ قابل تنظیم انجام می‌شود.", ""]
+        kb = []
+        for m in mons:
+            st = "⏸" if m.get("enabled") is False else "🟢"
+            kb.append([btn(f'{st} {m.get("name") or m.get("id")}',
+                           f'ndtg:{m.get("id")}', "plain")])
+        kb.append([btn("➕ ساخت مانیتور", "ndmk")])
+        if mons:
+            kb.append([btn("🗑 حذف مانیتور", "nddelmenu")])
+        kb.append([btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _nd_mk_interval(self, chat: int, mid: int, i: int) -> None:
+        try:
+            p = self._pg_panels()[i]
+        except IndexError:
+            self._show(chat, mid, "❌ پنل پیدا نشد.", home_kb())
+            return
+        kb = grid3([btn(f"{m} دقیقه", f"ndset:{i}:{m}")
+                    for m in (5, 10, 15, 30, 60)])
+        kb.append([btn("🔙 بازگشت", "nd"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   f'⏱ فاصله پایش نودهای «{p.get("name")}»؟', kb)
+
+    def _nd_interval_do(self, chat: int, mid: int, arg: str) -> None:
+        from monitors import get_node_monitors
+        i, mins = arg.split(":")
+        try:
+            p = self._pg_panels()[int(i)]
+            mins = max(1, int(mins))
+        except (IndexError, ValueError):
+            self._show(chat, mid, "❌", home_kb())
+            return
+        mons = get_node_monitors(self.store)
+        mid_ = f"m{int(__import__('time').time())}"
+        mons.append({"id": mid_, "panel_url": p.get("url"),
+                     "name": p.get("name") or p.get("url"),
+                     "intervalMin": mins, "enabled": True, "excluded": []})
+        self.store.put_json("node_monitors", mons)
+        self.bot.send(chat,
+                      f'✅ مانیتور نود «{p.get("name")}» ساخته شد (هر {mins} دقیقه).')
+        self._nd_home(chat, 0)
+
+    def _nd_toggle(self, chat: int, mid: int, mid_: str) -> None:
+        from monitors import get_node_monitors
+        mons = get_node_monitors(self.store)
+        for m in mons:
+            if str(m.get("id")) == str(mid_):
+                m["enabled"] = not m.get("enabled", True)
+        self.store.put_json("node_monitors", mons)
+        self._nd_home(chat, mid)
+
+    def _nd_del_ask(self, chat: int, mid: int, mid_: str) -> None:
+        self._show(chat, mid, "⚠️ مانیتور حذف شود؟",
+                   [[btn("✅ بله", f"nddy:{mid_}"),
+                     btn("❌ انصراف", "nd")]])
+
+    def _nd_del_do(self, chat: int, mid: int, mid_: str) -> None:
+        from monitors import get_node_monitors
+        self.store.put_json("node_monitors",
+                            [m for m in get_node_monitors(self.store)
+                             if str(m.get("id")) != str(mid_)])
+        self.bot.send(chat, "✅ حذف شد.")
+        self._nd_home(chat, 0)
 
     # ---------- Linode ----------
 

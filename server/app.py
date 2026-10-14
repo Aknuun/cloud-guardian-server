@@ -165,6 +165,7 @@ def main() -> None:
             print(f"remind: {e}", flush=True)
         try:
             import alerts as _al
+            from monitors import run_usage_monitor, run_node_poll
             from pg import Pg as _Pg
             now = time.time()
             panels = router._pg_panels()
@@ -172,6 +173,17 @@ def main() -> None:
             if now - last_flush > 60:
                 _al.flush_buffers(bot, store, pmap, int(cfg["admin_id"]))
                 last_flush = now
+                _pgc = lambda p: _Pg(p["url"], p["username"], p["password"])
+                try:
+                    run_usage_monitor(bot, store, panels, int(cfg["admin_id"]),
+                                      _pgc)
+                except Exception as e:
+                    print(f"um: {e}", flush=True)
+                try:
+                    run_node_poll(bot, store, panels, int(cfg["admin_id"]),
+                                  _pgc)
+                except Exception as e:
+                    print(f"node: {e}", flush=True)
             if now - last_digest_u > 3600:
                 _al.run_digest(bot, store, panels, "usage",
                                int(cfg["admin_id"]),
