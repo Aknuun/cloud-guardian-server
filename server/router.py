@@ -138,27 +138,50 @@ class Router:
             _, zid, pg = data.split(":", 2)
             self._cf_records(chat, mid, zid, int(pg))
         elif data.startswith("cfr:"):
-            _, zid, rid = data.split(":", 2)
-            self._cf_record(chat, mid, zid, rid)
+            rid = data[4:]
+            zid = self._cf_zid(chat)
+            if not zid:
+                self._show(chat, mid, "⏳ نشست منقضی شد؛ دامنه را دوباره باز کن.",
+                           home_kb())
+            else:
+                self._cf_record(chat, mid, zid, rid)
         elif data.startswith("cfdel:"):
-            _, zid, rid = data.split(":", 2)
-            self._cf_del_ask(chat, mid, zid, rid)
+            rid = data[6:]
+            zid = self._cf_zid(chat)
+            if not zid:
+                self._show(chat, mid, "⏳ نشست منقضی شد؛ دامنه را دوباره باز کن.",
+                           home_kb())
+            else:
+                self._cf_del_ask(chat, mid, zid, rid)
         elif data.startswith("cfdelok:"):
-            _, zid, rid = data.split(":")
-            self._cf_del_do(chat, mid, zid, rid)
+            rid = data[8:]
+            zid = self._cf_zid(chat)
+            if not zid:
+                self._show(chat, mid, "⏳ نشست منقضی شد؛ دامنه را دوباره باز کن.",
+                           home_kb())
+            else:
+                self._cf_del_do(chat, mid, zid, rid)
         elif data.startswith("cfpx:"):
-            _, zid, rid = data.split(":")
-            self._cf_toggle_px(chat, mid, zid, rid)
+            rid = data[5:]
+            zid = self._cf_zid(chat)
+            if zid:
+                self._cf_toggle_px(chat, mid, zid, rid)
         elif data.startswith("cfttl:"):
-            _, zid, rid = data.split(":")
-            self._cf_cycle_ttl(chat, mid, zid, rid)
+            rid = data[6:]
+            zid = self._cf_zid(chat)
+            if zid:
+                self._cf_cycle_ttl(chat, mid, zid, rid)
         elif data.startswith("cfedit:"):
-            _, zid, rid = data.split(":")
+            rid = data[7:]
+            zid = self._cf_zid(chat)
+            if not zid:
+                self._show(chat, mid, "⏳ نشست منقضی شد؛ دامنه را دوباره باز کن.",
+                           home_kb())
+                return
             self.store.put_json(f"pend:{chat}",
-                                {"type": "cfedit", "zid": zid, "rid": rid,
-                                 "back": f"cfr:{zid}:{rid}"}, 900)
+                                {"type": "cfedit", "zid": zid, "rid": rid}, 900)
             self._show(chat, mid, "✏️ مقدار جدید را بفرستید:",
-                       [[btn("❌ انصراف", f"cfr:{zid}:{rid}")]])
+                       [[btn("❌ انصراف", f"cfr:{rid}")]])
         elif data.startswith("cfadd:"):
             self._cf_add_start(chat, mid, data[6:])
         else:
@@ -200,6 +223,15 @@ class Router:
         self._show(chat, mid,
                    f"☁️ کلودفلر — {len(zones)} دامنه فعال", rows)
 
+    def _cf_zid(self, chat: int) -> str:
+        # آی‌دی ۳۲کاراکتری زون در callback جا نمی‌شود (سقف ۶۴ بایت تلگرام)؛
+        # پس در نشست نگه می‌داریم و دکمه‌ها فقط آی‌دی رکورد را حمل می‌کنند.
+        try:
+            sess = self.store.get_json(f"s:{chat}", {})
+            return str((sess or {}).get("zid") or "")
+        except Exception:
+            return ""
+
     def _cf_records(self, chat: int, mid: int, zid: str, pg: int) -> None:
         try:
             recs = self.cf.records(zid) or []
@@ -208,6 +240,7 @@ class Router:
             self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}", home_kb())
             return
         zname = next((z["name"] for z in zones if z["id"] == zid), zid)
+        self.store.put_json(f"s:{chat}", {"zid": zid}, 3600)
         pages = max(1, (len(recs) + PAGE - 1) // PAGE)
         pg = max(0, min(pg, pages - 1))
         rows = []
@@ -216,7 +249,7 @@ class Router:
             if short.endswith("." + zname):
                 short = short[:-(len(zname) + 1)] or "@"
             rows.append([btn(f'{short}-{r.get("type")}',
-                             f'cfr:{zid}:{r.get("id")}')])
+                             f'cfr:{r.get("id")}')])
         nav = []
         if pages > 1:
             nav.append(btn(f"{pg + 1}/{pages}",
@@ -245,18 +278,18 @@ class Router:
                f"مقدار: <code>{esc(r.get('content'))}</code>\n"
                f"TTL: {esc(r.get('ttl'))} · پروکسی: "
                f"{'روشن' if r.get('proxied') else 'خاموش'}")
-        kb = [[btn("🗑 حذف", f"cfdel:{zid}:{rid}"),
+        kb = [[btn("🗑 حذف", f"cfdel:{rid}"),
                btn("🔙 بازگشت", f"cfz:{zid}")],
               [btn(f'🌐 پروکسی: {"روشن" if r.get("proxied") else "خاموش"}',
-                   f"cfpx:{zid}:{rid}"),
-               btn(f'⏱ TTL: {r.get("ttl")}', f"cfttl:{zid}:{rid}")],
-              [btn("✏️ تغییر مقدار", f"cfedit:{zid}:{rid}")],
+                   f"cfpx:{rid}"),
+               btn(f'⏱ TTL: {r.get("ttl")}', f"cfttl:{rid}")],
+              [btn("✏️ تغییر مقدار", f"cfedit:{rid}")],
               [btn("🏠 خانه", "menu")]]
         self._show(chat, mid, txt, kb)
 
     def _cf_del_ask(self, chat: int, mid: int, zid: str, rid: str) -> None:
-        kb = [[btn("✅ بله، حذف کن", f"cfdelok:{zid}:{rid}"),
-               btn("❌ انصراف", f"cfr:{zid}:{rid}")]]
+        kb = [[btn("✅ بله، حذف کن", f"cfdelok:{rid}"),
+               btn("❌ انصراف", f"cfr:{rid}")]]
         self._show(chat, mid, "⚠️ مطمئنی حذف شود؟", kb)
 
     def _cf_del_do(self, chat: int, mid: int, zid: str, rid: str) -> None:
