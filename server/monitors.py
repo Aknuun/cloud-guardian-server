@@ -229,6 +229,72 @@ def get_node_monitors(store) -> list:
     return lst if isinstance(lst, list) else []
 
 
+SRVMON_DEFAULTS = {"enabled": True, "intervalMin": 30, "cpuPct": 85,
+                   "memPct": 90, "diskPct": 85}
+
+
+def srvmon_cfg(store) -> dict:
+    c = store.get_json("srvmon_cfg", {}) or {}
+    out = dict(SRVMON_DEFAULTS)
+    out.update(c)
+    return out
+
+
+def srvmon_save(store, cfg: dict) -> None:
+    store.put_json("srvmon_cfg", cfg)
+
+
+def run_srvmon(bot, store, servers: list, admin_id: int, ssh_run) -> int:
+    """CPU/RAM/disk check over SSH. Returns alerts sent."""
+    import re
+    import time
+    cfg = srvmon_cfg(store)
+    if not cfg.get("enabled") or not servers:
+        return 0
+    now = int(time.time() * 1000)
+    last = int(store.get("srvmon_last") or 0)
+    if last and now - last < max(5, float(cfg.get("intervalMin", 30))) * 60000:
+        return 0
+    store.put("srvmon_last", str(now))
+    sent = 0
+    for s in servers:
+        sid = str(s.get("id"))
+        r = ssh_run(s, "echo CPU:$(awk '{print $1}' /proc/loadavg) "
+                       "CORES:$(nproc) MEM:$(free | awk '/Mem:/{print $3/$2*100}') "
+                       "DISK:$(df / | awk 'NR==2{print $5}')")
+        if not r.get("ok"):
+            continue
+        m = dict(re.findall(r"(CPU|CORES|MEM|DISK):(\S+)", r.get("out", "")))
+        try:
+            load, cores = float(m.get("CPU", 0)), max(1, int(m.get("CORES", 1)))
+            cpu = load / cores * 100
+            mem = float(str(m.get("MEM", 0)))
+            disk = float(str(m.get("DISK", "0%")).rstrip("%"))
+        except (ValueError, TypeError):
+            continue
+        bad = []
+        if cpu >= float(cfg.get("cpuPct", 85)):
+            bad.append(f"CPU {cpu:.0f}٪")
+        if mem >= float(cfg.get("memPct", 90)):
+            bad.append(f"RAM {mem:.0f}٪")
+        if disk >= float(cfg.get("diskPct", 85)):
+            bad.append(f"دیسک {disk:.0f}٪")
+        if not bad:
+            continue
+        cool = store.get_json("srvmon_cool", {}) or {}
+        if now - int(cool.get(sid, 0)) < 6 * 3600000:
+            continue
+        cool[sid] = now
+        store.put_json("srvmon_cool", cool)
+        try:
+            bot.send(admin_id,
+                     f'⚠️ فشار سرور «{s.get("name")}»\n' + "، ".join(bad))
+            sent += 1
+        except Exception:
+            pass
+    return sent
+
+
 def _node_state(store, mid: str) -> dict:
     s = store.get_json(f"ndst:{mid}", {}) or {}
     return s if isinstance(s.get("nodes"), dict) else {"nodes": {}, "ts": None}

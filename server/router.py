@@ -316,10 +316,60 @@ class Router:
                 self._show(chat, mid, "🔍 بخشی از نام یا مقدار رکورد را بفرستید:",
                            [[btn("❌ انصراف", "zones")]])
         elif data in ("noop",
-                      "srv", "dommon", "fmail", "lb",
-                      "zset", "selmode", "zmail", "ztraf", "cref", "rtraf"):
+                      "dommon", "fmail", "lb",
+                      "zset", "selmode", "zmail", "ztraf", "cref", "rtraf",
+                      "srvsub", "srvimport", "srvpw",
+                      "srvstats", "srvupd", "srvedit"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
+        elif data == "srvaddbulk":
+            self.store.put_json(f"pend:{chat}", {"type": "srv_bulk"}, 900)
+            self._show(chat, mid,
+                       "📥 هر خط یک سرور:\n<code>host user password [port]</code>",
+                       [[btn("🔙 انصراف", "srv")]])
+        elif data == "srv":
+            self._srv_home(chat, mid)
+        elif data == "srvadd":
+            self.store.put_json(f"pend:{chat}", {"type": "srv_add_host"},
+                                600)
+            self._show(chat, mid, "🌐 هاست یا آی‌پی سرور را بفرستید:",
+                       [[btn("🔙 انصراف", "srv")]])
+        elif data == "srvdel":
+            lst = self._srv_list()
+            kb = [[btn(f'🗑 {s.get("name")}', f'srvdelx:{s.get("id")}')]
+                  for s in lst]
+            kb.append([btn("🔙 بازگشت", "srv")])
+            self._show(chat, mid, "🗑 کدام سرور حذف شود؟", kb)
+        elif data.startswith("srvopen:"):
+            self._srv_open(chat, mid, data[8:])
+        elif data.startswith("srvdelx:"):
+            self._srv_del_ask(chat, mid, data[8:])
+        elif data.startswith("srvdely:"):
+            self._srv_del_do(chat, mid, data[8:])
+        elif data.startswith("srvinfo:"):
+            self._srv_info(chat, mid, data[8:])
+        elif data.startswith("srvdisk:"):
+            self._srv_disk(chat, mid, data[8:])
+        elif data.startswith("srvreboot:"):
+            self._show(chat, mid, "⚠️ سرور ریبوت شود؟",
+                       [[btn("✅ بله", f"srvrebootgo:{data[9:]}"),
+                         btn("❌ انصراف", f"srvopen:{data[9:]}")]])
+        elif data.startswith("srvrebootgo:"):
+            self._srv_reboot(chat, mid, data[12:])
+        elif data == "srvmon":
+            self._srvmon_home(chat, mid)
+        elif data == "srvmonoff":
+            from monitors import srvmon_cfg, srvmon_save
+            cfg = srvmon_cfg(self.store)
+            cfg["enabled"] = not cfg.get("enabled", True)
+            srvmon_save(self.store, cfg)
+            self._srvmon_home(chat, mid)
+        elif data.startswith("srvmonnum:"):
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "srvmon_num",
+                                 "key": data[10:]}, 600)
+            self._show(chat, mid, "🔢 عدد جدید را بفرستید:",
+                       [[btn("🔙 انصراف", "srvmon")]])
         elif data == "hf":
             self._hf_home(chat, mid)
         elif data == "hftg":
@@ -1298,6 +1348,69 @@ class Router:
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
+        elif pend.get("type") == "srv_add_host":
+            host = text.strip().split()[0]
+            if not host:
+                self.bot.send(chat, "❌ هاست معتبر نیست.")
+                return
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "srv_add_user",
+                                 "host": host}, 600)
+            self.bot.send(chat, "👤 یوزر SSH؟ (پیش‌فرض root — بنویسید `root`):")
+        elif pend.get("type") == "srv_add_user":
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "srv_add_secret",
+                                 "host": pend["host"],
+                                 "user": text.strip() or "root"}, 600)
+            self.bot.send(chat, "🔒 رمز عبور (یا کلید خصوصی SSH) را بفرستید:")
+        elif pend.get("type") == "srv_add_secret":
+            import time as _t
+            import random as _r
+            lst = self._srv_list()
+            lst.append({"id": f's{int(_t.time())}{_r.randint(10, 99)}',
+                        "name": pend["host"], "host": pend["host"],
+                        "user": pend.get("user") or "root",
+                        "port": 22, "auth": "key"
+                        if text.strip().startswith("-----BEGIN") else "pass",
+                        "secret": text.strip()})
+            self.store.put_json("srv_list", lst)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ سرور اضافه شد.")
+            self._srv_home(chat, 0)
+        elif pend.get("type") == "srv_bulk":
+            import time as _t
+            import random as _r
+            lst = self._srv_list()
+            n = 0
+            for ln in text.splitlines():
+                p = ln.split()
+                if not p:
+                    continue
+                lst.append({"id": f's{int(_t.time())}{_r.randint(10, 99)}{n}',
+                            "name": p[0], "host": p[0],
+                            "user": p[1] if len(p) > 1 else "root",
+                            "port": int(p[3]) if len(p) > 3 and p[3].isdigit() else 22,
+                            "auth": "pass",
+                            "secret": p[2] if len(p) > 2 else ""})
+                n += 1
+            self.store.put_json("srv_list", lst)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, f"✅ {n} سرور اضافه شد.")
+            self._srv_home(chat, 0)
+        elif pend.get("type") == "srvmon_num":
+            from monitors import srvmon_cfg, srvmon_save
+            try:
+                v = float(text.strip())
+                assert v > 0
+            except (ValueError, AssertionError):
+                self.bot.send(chat, "❌ عدد نامعتبر است.")
+                return
+            cfg = srvmon_cfg(self.store)
+            cfg[pend.get("key", "cpuPct")] = v
+            srvmon_save(self.store, cfg)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ ذخیره شد.")
+            self._srvmon_home(chat, 0)
         elif pend.get("type") == "arvan_key":
             key = norm_key(text.strip())
             if not key:
@@ -2002,6 +2115,147 @@ class Router:
             except Exception:
                 pass
         _th.Thread(target=_go, daemon=True).start()
+
+    # ---------- Servers (SSH) ----------
+
+    def _srv_list(self) -> list:
+        lst = self.store.get_json("srv_list", [])
+        return lst if isinstance(lst, list) else []
+
+    def _srv_home(self, chat: int, mid: int = 0) -> None:
+        lst = self._srv_list()
+        lines = ["🖥 سرورها و مانیتورینگ", "",
+                 "مدیریت سرورهای لینوکسی از طریق SSH:\n"
+                 "• مانیتور CPU / RAM / دیسک / پهنای باند\n", ""]
+        kb = []
+        if lst:
+            lines.append(f"🖧 سرورهای ثبت‌شده ({len(lst)}): روی هرکدام بزنید:")
+            rows = [btn(f'🖧 {s.get("name")}', f'srvopen:{s.get("id")}',
+                        "plain") for s in lst]
+            kb.extend(grid2(rows))
+        kb.append([btn("📥 افزودن گروهی", "srvaddbulk"),
+                   btn("➕ افزودن سرور", "srvadd")])
+        kb.append([btn("➕ افزودن از ساب‌دامنه", "srvsub"),
+                   btn("📥 وارد کردن از دیتاسنترها", "srvimport")])
+        if lst:
+            kb.append([btn("🗑 حذف سرور", "srvdel")])
+        kb.append([btn("📊 مانیتور سرورها", "srvmon"),
+                   btn("🔑 رمزهای ذخیره‌شده", "srvpw")])
+        kb.append([btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _srv_get(self, sid: str):
+        for i, s in enumerate(self._srv_list()):
+            if str(s.get("id")) == str(sid):
+                return i, s
+        return None, None
+
+    def _srv_open(self, chat: int, mid: int, sid: str) -> None:
+        i, s = self._srv_get(sid)
+        if not s:
+            self._show(chat, mid, "❌ سرور پیدا نشد.",
+                       [[btn("🖥 سرورها و مانیتورینگ", "srv")]])
+            return
+        lines = [f'🖧 {esc(s.get("name"))}',
+                 f'🌐 <code>{esc(s.get("host"))}:{esc(s.get("port") or 22)}</code>  ({esc(s.get("user") or "root")})',
+                 f'🔐 {"🔑 کلید SSH" if s.get("auth") == "key" else "🔒 رمز عبور"}']
+        if s.get("note"):
+            lines.append(f'📝 {esc(s.get("note"))}')
+        lines += ["", "یک عملیات را انتخاب کنید:"]
+        kb = [[btn("📊 مانیتور سرور", f"srvstats:{i}"),
+               btn("⚙️ آستانه‌ها", "srvmon")],
+              [btn("🔄 ریبوت", f"srvreboot:{s.get('id')}"),
+               btn("⏱ آپدیت و آپگرید", f"srvupd:{s.get('id')}")],
+              [btn("ℹ️ مشخصات سیستم", f"srvinfo:{s.get('id')}"),
+               btn("💾 فضای دیسک", f"srvdisk:{s.get('id')}")],
+              [btn("✏️ ویرایش", f"srvedit:{s.get('id')}"),
+               btn("🗑 حذف", f'srvdelx:{s.get("id")}', "danger")],
+              [btn("🔙 بازگشت", "srv"),
+               btn("🏠 خانه", "menu")]]
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _srv_ssh(self, s: dict, cmd: str):
+        from sshop import run_cmd
+        return run_cmd(s.get("host"), s.get("user") or "root",
+                       s.get("secret") or "", s.get("port") or 22, cmd)
+
+    def _srv_info(self, chat: int, mid: int, sid: str) -> None:
+        _, s = self._srv_get(sid)
+        if not s:
+            self._show(chat, mid, "❌ سرور پیدا نشد.", home_kb())
+            return
+        self._show(chat, mid, "⏳ در حال خواندن…", home_kb())
+        from sshop import INFO_CMD
+        r = self._srv_ssh(s, INFO_CMD)
+        if not r["ok"]:
+            self._show(chat, mid, f'❌ وصل نشد: <code>{esc(r["err"])}</code>',
+                       [[btn("🔙 بازگشت", "srv")]])
+            return
+        out = []
+        for ln in r["out"].splitlines():
+            if ":" in ln:
+                k, v = ln.split(":", 1)
+                out.append(f"{k.strip()}: <code>{esc(v.strip())}</code>")
+        self._show(chat, mid, f'🖥 {esc(s.get("name"))}\n\n' + "\n".join(out),
+                   [[btn("🔙 بازگشت", f"srvopen:{sid}"),
+                     btn("🏠 خانه", "menu")]])
+
+    def _srv_disk(self, chat: int, mid: int, sid: str) -> None:
+        _, s = self._srv_get(sid)
+        if not s:
+            self._show(chat, mid, "❌ سرور پیدا نشد.", home_kb())
+            return
+        from sshop import DISK_CMD
+        r = self._srv_ssh(s, DISK_CMD)
+        if not r["ok"]:
+            self._show(chat, mid, f'❌ وصل نشد: <code>{esc(r["err"])}</code>',
+                       [[btn("🔙 بازگشت", "srv")]])
+            return
+        self._show(chat, mid,
+                   f'💾 دیسک «{esc(s.get("name"))}»:\n<code>{esc(r["out"])}</code>',
+                   [[btn("🔙 بازگشت", f"srvopen:{sid}"),
+                     btn("🏠 خانه", "menu")]])
+
+    def _srv_reboot(self, chat: int, mid: int, sid: str) -> None:
+        _, s = self._srv_get(sid)
+        if not s:
+            self._show(chat, mid, "❌ سرور پیدا نشد.", home_kb())
+            return
+        r = self._srv_ssh(s, "reboot")
+        self.bot.send(chat, "✅ دستور ریبوت ارسال شد."
+                      if r["ok"] else f'❌ نشد: <code>{esc(r["err"])}</code>')
+        self._srv_open(chat, 0, sid)
+
+    def _srv_del_ask(self, chat: int, mid: int, sid: str) -> None:
+        self._show(chat, mid, "⚠️ سرور از لیست حذف شود؟",
+                   [[btn("✅ بله", f"srvdely:{sid}"),
+                     btn("❌ انصراف", "srv")]])
+
+    def _srv_del_do(self, chat: int, mid: int, sid: str) -> None:
+        self.store.put_json("srv_list",
+                            [s for s in self._srv_list()
+                             if str(s.get("id")) != str(sid)])
+        self.bot.send(chat, "✅ حذف شد.")
+        self._srv_home(chat, 0)
+
+    def _srvmon_home(self, chat: int, mid: int = 0) -> None:
+        from monitors import srvmon_cfg
+        cfg = srvmon_cfg(self.store)
+        txt = "\n".join([
+            "📊 مانیتور سرورها", "",
+            f'وضعیت: {"روشن ✅" if cfg.get("enabled") else "خاموش ❌"}',
+            f'⏱ فاصله بررسی: هر {cfg.get("intervalMin")} دقیقه',
+            f'🖥 حد CPU: {cfg.get("cpuPct")}٪ · 🧮 حد RAM: {cfg.get("memPct")}٪ · 💾 حد دیسک: {cfg.get("diskPct")}٪'])
+        kb = [[btn("⏸ خاموش" if cfg.get("enabled") else "▶️ روشن",
+                   "srvmonoff")],
+              [btn(f'⏱ هر {cfg.get("intervalMin")} دقیقه',
+                   "srvmonnum:intervalMin")],
+              [btn(f'🖥 CPU {cfg.get("cpuPct")}٪', "srvmonnum:cpuPct"),
+               btn(f'🧮 RAM {cfg.get("memPct")}٪', "srvmonnum:memPct"),
+               btn(f'💾 دیسک {cfg.get("diskPct")}٪', "srvmonnum:diskPct")],
+              [btn("🔙 بازگشت", "srv"),
+               btn("🏠 خانه", "menu")]]
+        self._show(chat, mid, txt, kb)
 
     # ---------- Linode ----------
 
