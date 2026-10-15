@@ -38,11 +38,13 @@ class Cf:
         return self._req("GET", f"/zones/{zone_id}/dns_records?per_page=100") or []
 
     def add_record(self, zone_id: str, rtype: str, name: str, content: str,
-                   ttl: int = 1, proxied: bool = False) -> dict:
-        return self._req("POST", f"/zones/{zone_id}/dns_records", {
-            "type": rtype, "name": name, "content": content,
-            "ttl": ttl, "proxied": proxied,
-        })
+                   ttl: int = 1, proxied: bool = False,
+                   priority: int | None = None) -> dict:
+        body = {"type": rtype, "name": name, "content": content,
+                "ttl": ttl, "proxied": proxied}
+        if priority is not None:
+            body["priority"] = priority
+        return self._req("POST", f"/zones/{zone_id}/dns_records", body)
 
     def del_record(self, zone_id: str, rec_id: str) -> dict:
         return self._req("DELETE", f"/zones/{zone_id}/dns_records/{rec_id}")

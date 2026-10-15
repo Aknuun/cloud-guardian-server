@@ -829,6 +829,17 @@ class Router:
         elif data.startswith("cfadd:"):
             _, acc, zid = data.split(":")
             self._cf_add_start(chat, mid, int(acc), zid)
+        elif data.startswith("cfat:"):
+            _, acc, zid, rtype = data.split(":")
+            if rtype not in ("A", "AAAA", "CNAME", "TXT", "MX", "NS"):
+                self._show(chat, mid, "❌ نوع رکورد نامعتبر است.", home_kb())
+            else:
+                self.store.put_json(f"pend:{chat}",
+                                    {"type": "ar_name", "acc": int(acc),
+                                     "zid": zid, "rtype": rtype}, 600)
+                self._show(chat, mid,
+                           f"➕ ساخت رکورد {rtype}\n\nنام رکورد را بفرستید (مثلاً www یا @):",
+                           [[btn("⬅️ انصراف", f"cfz:{acc}:{zid}")]])
         elif data.startswith("lbs:"):
             self._lb_settings(chat, mid, data[4:])
         elif data.startswith("lbsr:"):
@@ -1284,14 +1295,41 @@ class Router:
                    btn("🏠 خانه", "menu")])
         self._show(chat, mid, "➕ افزودن رکورد — دامنه را انتخاب کن:", kb)
 
+    def _ar_create(self, chat: int, pend: dict, content: str,
+                   priority) -> None:
+        hint = _value_hint(content, str(pend.get("rtype", "A")).upper())
+        if hint:
+            self.bot.send(chat,
+                          f"❌ {hint}\n\nپیام اصلاح‌شده را دوباره بفرستید.",
+                          [[btn("⬅️ انصراف",
+                                f'cfz:{pend.get("acc", 0)}:{pend.get("zid", "")}')]])
+            return
+        try:
+            self._cf_client(pend.get("acc", 0)).add_record(
+                pend["zid"], pend.get("rtype", "A"), pend.get("name", ""),
+                content, 1, False, priority)
+        except (IndexError, CfError) as e:
+            self.bot.send(chat, f"❌ ثبت نشد: {esc(e)}")
+            return
+        self.store.delete(f"pend:{chat}")
+        self.bot.send(chat, "✅ رکورد ثبت شد.")
+        self._cf_records(chat, 0, pend.get("acc", 0), pend["zid"], 0)
+
     def _cf_add_start(self, chat: int, mid: int, acc: int,
                     zid: str) -> None:
-        self.store.put_json(f"pend:{chat}",
-                            {"type": "cfadd", "acc": acc, "zid": zid}, 900)
+        types = ["A", "AAAA", "CNAME", "TXT", "MX", "NS"]
+        kb = grid3([btn(t, f"cfat:{acc}:{zid}:{t}") for t in types])
+        kb.append([btn("🔙 بازگشت", f"cfz:{acc}:{zid}"),
+                   btn("🏠 خانه", "menu")])
+        try:
+            zname = next((z["name"] for z in
+                          self._cf_client(acc).zones()
+                          if z["id"] == zid), zid)
+        except (IndexError, CfError):
+            zname = zid
         self._show(chat, mid,
-                   "➕ رکورد جدید — نوع و نام و مقدار را با فاصله بفرست:\n"
-                   "<code>A sub 1.2.3.4</code>",
-                   [[btn("❌ انصراف", "zones")]])
+                   f"➕ ساخت رکورد در {zname}\n\nنوع رکورد را انتخاب کنید:",
+                   kb)
 
     def _cf_acc_of_zone(self, zid: str) -> int:
         for i, a in enumerate(self._cf_accs()):
@@ -1398,6 +1436,38 @@ class Router:
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, "✅ رکورد ثبت شد.")
             self._cf_records(chat, 0, pend.get("acc", 0), pend["zid"], 0)
+        elif pend.get("type") == "ar_name":
+            if not text.strip():
+                self.bot.send(chat, "⚠️ نام رکورد معتبر نیست.")
+                return
+            pend = dict(pend, type="ar_content", name=text.strip())
+            self.store.put_json(f"pend:{chat}", pend, 600)
+            rt = pend.get("rtype", "A")
+            if rt == "MX":
+                msg = "📮 هاست سرور ایمیل را بفرستید (مثلاً mail.example.com):"
+            elif rt == "TXT":
+                msg = "📝 متن رکورد TXT را بفرستید:"
+            elif rt == "NS":
+                msg = "🔤 هاست نیم‌سرور را بفرستید (مثلاً ns1.example.com):"
+            else:
+                msg = "🔤 حالا مقدار IP رکورد را بفرستید:"
+            self.bot.send(chat, msg,
+                          [[btn("⬅️ انصراف",
+                                f'cfz:{pend.get("acc", 0)}:{pend.get("zid", "")}')]])
+        elif pend.get("type") == "ar_content":
+            if pend.get("rtype") == "MX":
+                pend = dict(pend, type="ar_priority",
+                            content=text.strip())
+                self.store.put_json(f"pend:{chat}", pend, 600)
+                self.bot.send(chat, "🔢 اولویت MX را بفرستید (عدد؛ خالی = ۱۰):",
+                              [[btn("⬅️ انصراف",
+                                    f'cfz:{pend.get("acc", 0)}:{pend.get("zid", "")}')]])
+                return
+            self._ar_create(chat, pend, text.strip(), None)
+        elif pend.get("type") == "ar_priority":
+            pr = int(text.strip()) if text.strip().isdigit() else 10
+            self._ar_create(chat, dict(pend, priority=pr),
+                            pend.get("content", ""), pr)
         elif pend.get("type") == "cfedit":
             r = self._cf_find(pend.get("acc", 0), pend["zid"], pend["rid"])
             if not r:
