@@ -388,12 +388,54 @@ class Router:
                 self._show(chat, mid, "🔍 بخشی از نام یا مقدار رکورد را بفرستید:",
                            [[btn("❌ انصراف", "zones")]])
         elif data in ("noop",
-                      "dommon", "fmail", "lb",
-                      "zset", "zmail", "ztraf", "cref", "rtraf",
-                      "srvsub", "srvimport", "srvpw",
+                      "fmail", "lb",
+                      "zset", "selmode", "zmail", "ztraf", "cref", "rtraf",
+                      "srvsub", "srvpw",
                       "srvstats", "srvupd", "srvedit"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
+        elif data == "sslm":
+            self._sslm_home(chat, mid)
+        elif data == "ssdma":
+            self.store.put_json(f"pend:{chat}", {"type": "ssl_host"}, 600)
+            self._show(chat, mid,
+                       "🔐 دامنه یا ساب‌دامنه‌ای که می‌خواهید گواهی‌اش نظارت شود را بفرستید (مثلاً example.com):",
+                       [[btn("🔙 انصراف", "sslm")]])
+        elif data == "sslmd":
+            from sslmon import get_monitors
+            mons = get_monitors(self.store)
+            if not mons:
+                self._show(chat, mid, "📭 دامنه‌ای ثبت نشده.",
+                           [[btn("🔙 بازگشت", "sslm"),
+                             btn("🏠 خانه", "menu")]])
+            else:
+                self._show(chat, mid, "🗑 کدام دامنه از نظارت حذف شود?",
+                           [[btn(f'🗑 {m.get("host")}', f'sslmdy:{i}')]
+                            for i, m in enumerate(mons)] +
+                           [[btn("🔙 بازگشت", "sslm"),
+                             btn("🏠 خانه", "menu")]])
+        elif data.startswith("sslmdy:"):
+            from sslmon import get_monitors
+            mons = get_monitors(self.store)
+            try:
+                rm = mons.pop(int(data[7:]))
+                self.store.put_json("ssl_monitor", mons)
+                self.bot.send(chat, f'✅ «{rm.get("host")}» از نظارت حذف شد.')
+            except (ValueError, IndexError):
+                self._show(chat, mid, "❌ دامنه پیدا نشد.", home_kb())
+                return
+            self._sslm_home(chat, 0)
+        elif data == "dommon":
+            self._show(chat, mid, "🌐 مانیتور دامنه و ترافیک‌ها\n\nیک بخش را انتخاب کنید:",
+                       [[btn("🔐 مانیتور SSL", "sslm"),
+                         btn("🗓 مانیتور انقضای دامنه", "domexp")],
+                        [btn("📊 ترافیک ساب‌ها", "traf"),
+                         btn("☁️ سهمیهٔ کلادفلر", "quota")],
+                        [btn("🏠 خانه", "menu")]])
+        elif data == "quota":
+            self._cf_quota(chat, mid)
+        elif data == "srvimport":
+            self._srv_import(chat, mid)
         elif data == "srvaddbulk":
             self.store.put_json(f"pend:{chat}", {"type": "srv_bulk"}, 900)
             self._show(chat, mid,
@@ -1937,6 +1979,18 @@ class Router:
                 return
             self.store.delete(f"pend:{chat}")
             self._lb_render(chat, 0, pend["gid"])
+        elif pend.get("type") == "ssl_host":
+            host = text.strip().lower().split("/")[0].split(":")[0]
+            if not host or "." not in host:
+                self.bot.send(chat, "❌ دامنه معتبر نیست.")
+                return
+            mons = [m for m in __import__("sslmon").get_monitors(self.store)]
+            if host not in [m.get("host") for m in mons]:
+                mons.append({"host": host})
+                self.store.put_json("ssl_monitor", mons)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ اضافه شد.")
+            self._sslm_home(chat, 0)
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
@@ -2994,6 +3048,27 @@ class Router:
               [btn("🔙 بازگشت", f'srvopen:{s.get("id")}'),
                btn("🏠 خانه", "menu")]]
         self._show(chat, mid, txt, kb)
+
+    def _sslm_home(self, chat: int, mid: int = 0) -> None:
+        from sslmon import get_monitors, check_all, result_line
+        mons = get_monitors(self.store)
+        lines = ["🔐 مانیتور گواهی SSL", ""]
+        if not mons:
+            lines.append("📭 دامنه‌ای برای نظارت ثبت نشده.\nبرای هشدار هنگام نزدیک شدن به انقضا (پیش‌فرض ۵ روز)، یک دامنه اضافه کنید.")
+        else:
+            try:
+                lines += [result_line(it) for it in check_all(self.store)]
+            except Exception as e:
+                lines.append(f"❌ خطا در بررسی: {esc(e)[:100]}")
+        kb = [[btn("➕ افزودن دامنه", "ssdma")]]
+        if mons:
+            kb.append([btn("🔄 بررسی دوباره", "sslm"),
+                       btn("🗑 حذف دامنه", "sslmd")])
+        kb.append([btn("🔙 بازگشت", "dommon"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _srvmon_home(self, chat: int, mid: int = 0) -> None:
         from monitors import srvmon_cfg
         cfg = srvmon_cfg(self.store)
         txt = "\n".join([
@@ -3329,6 +3404,75 @@ class Router:
         save_cfg(self.store, key, cfg)
         self.bot.send(chat, "✅ زاپاس حذف شد.")
         self._lb_spare_home_gid(chat, 0, gid)
+
+    def _cf_quota(self, chat: int, mid: int) -> None:
+        from cfusage import account_usage
+        accs = self._cf_accs()
+        if not accs:
+            self._show(chat, mid, "❌ اکانت کلادفلر تنظیم نشده.", home_kb())
+            return
+        lines = ["☁️ سهمیهٔ کلادفلر (امروز)", ""]
+        kb = []
+        for a in accs:
+            try:
+                u = account_usage(a["token"])
+            except Exception as e:
+                lines.append(f'• {a["name"]}: خطا ({str(e)[:60]})')
+                continue
+            kv = u.get("kv") or {}
+            lines.append(f'• {a["name"]}:')
+            lines.append(f'  🚦 درخواست‌ها: {u.get("requests", "?")} / ۱۰۰٬۰۰۰')
+            lines.append(f'  🗄 KV خواندن: {kv.get("read", "?")} / ۱۰۰٬۰۰۰')
+            lines.append(f'  ✍️ KV نوشتن: {kv.get("write", "?")} / ۱٬۰۰۰')
+            lines.append(f'  🗑 KV حذف: {kv.get("delete", "?")} / ۱٬۰۰۰')
+            st = u.get("storage") or {}
+            if st:
+                lines.append(f'  💾 حجم KV: {st.get("bytes", "?")} بایت · {st.get("keys", "?")} کلید')
+        kb.append([btn("🔙 بازگشت", "dommon"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _srv_import(self, chat: int, mid: int) -> None:
+        self._show(chat, mid, "⏳ در حال خواندن سرورها از دیتاسنترها…",
+                   home_kb())
+        found = []
+        for a in self._hz_accs():
+            try:
+                for s in Hz(a["token"]).all("/servers"):
+                    ip = ((s.get("public_net") or {}).get("ipv4") or {}).get("ip")
+                    if ip:
+                        found.append({"host": ip, "name": s.get("name") or ip,
+                                      "note": f'Hetzner: {a.get("name")}'})
+            except HzError:
+                continue
+        for a in self._ln_accs():
+            try:
+                from ln import Ln
+                for s in Ln(a["token"]).all("/linode/instances"):
+                    ip = (s.get("ipv4") or [None])[0]
+                    if ip:
+                        found.append({"host": ip, "name": s.get("label") or ip,
+                                      "note": f'Linode: {a.get("name")}'})
+            except Exception:
+                continue
+        lst = self._srv_list()
+        have = {str(s.get("host") or "").lower() for s in lst}
+        import time as _t
+        import random as _r
+        n = 0
+        for f in found:
+            if str(f["host"]).lower() in have:
+                continue
+            lst.append({"id": f's{int(_t.time())}{_r.randint(10, 99)}{n}',
+                        "name": f["name"], "host": f["host"],
+                        "user": "root", "port": 22, "auth": "pass",
+                        "secret": "", "note": f.get("note", "")})
+            n += 1
+        self.store.put_json("srv_list", lst)
+        self.bot.send(chat,
+                      f"✅ {n} سرور تازه اضافه شد." + (" (رمز ندارند؛ ویرایش کنید.)" if n else ""),
+                      [[btn("🖥 سرورها و مانیتورینگ", "srv")],
+                       [btn("🏠 خانه", "menu")]])
 
     # ---------- Linode ----------
 
