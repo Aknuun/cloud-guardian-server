@@ -245,6 +245,14 @@ class Router:
         elif data.startswith("hzsu:"):
             _, i, sid, step = data.split(":")
             self._hz_op(chat, mid, int(i), sid, step)
+        elif data.startswith("hzsv:"):
+            _, i, sid, step, arg = data.split(":")
+            self._hz_pick(chat, mid, int(i), sid, step, arg)
+        elif data.startswith("hzok:"):
+            parts = data.split(":")
+            i, sid, step = int(parts[1]), parts[2], parts[3]
+            self._hz_do(chat, mid, i, sid, step,
+                        parts[4] if len(parts) > 4 else "")
         elif data.startswith("hzdelok:"):
             _, i, sid = data.split(":")
             self._hz_del_server(chat, mid, int(i), sid)
@@ -2668,7 +2676,17 @@ class Router:
             btn("⚡ روشن", f"lnsu:{i}:{sid}:on"),
             btn("🔌 خاموش", f"lnsu:{i}:{sid}:off"),
             btn("🔄 ریبوت", f"lnsu:{i}:{sid}:reboot"),
+            btn("🔄 ریست", f"lnsu:{i}:{sid}:reset"),
+            btn("🔓 ریست رمز", f"lnsu:{i}:{sid}:pass"),
             btn("✏️ تغییر نام", f"lnsu:{i}:{sid}:rename"),
+            btn("🛠️ ریبیلد", f"lnsu:{i}:{sid}:rebuild"),
+            btn("⬆️ ارتقا", f"lnsu:{i}:{sid}:upgrade"),
+            btn("📷 اسنپ‌شات", f"lnsu:{i}:{sid}:snap"),
+            btn("🗑 حذف اسنپ‌شات", f"lnsu:{i}:{sid}:dsnap"),
+            btn("➕ IPv4", f"lnsu:{i}:{sid}:a4"),
+            btn("➕ IPv6", f"lnsu:{i}:{sid}:a6"),
+            btn("❌ IPv4", f"lnsu:{i}:{sid}:u4"),
+            btn("❌ IPv6", f"lnsu:{i}:{sid}:u6"),
             btn("🗑 حذف سرور", f"lnsu:{i}:{sid}:del", "danger"),
         ])
         kb.append([btn("🔙 بازگشت", f"lns:{i}:0"),
