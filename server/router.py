@@ -776,6 +776,48 @@ class Router:
         elif data.startswith("cfadd:"):
             _, acc, zid = data.split(":")
             self._cf_add_start(chat, mid, int(acc), zid)
+        elif data.startswith("lbs:"):
+            self._lb_settings(chat, mid, data[4:])
+        elif data.startswith("lbsr:"):
+            self._lb_settings_gid(chat, mid, data[5:])
+        elif data.startswith("lbss:"):
+            self._lb_spare_home(chat, mid, data[5:])
+        elif data.startswith("lbsh:"):
+            self._lb_spare_home_gid(chat, mid, data[5:])
+        elif data.startswith("lbsm:"):
+            _, gid, idx = data.split(":")
+            self._lb_spare_menu(chat, mid, gid, int(idx))
+        elif data.startswith("lbw:"):
+            _, gid, idx = data.split(":")
+            self._lb_weight_ask(chat, mid, gid, int(idx))
+        elif data.startswith("lbt:"):
+            _, gid, idx = data.split(":")
+            self._lb_toggle_ask(chat, mid, gid, int(idx))
+        elif data.startswith("lbtc:"):
+            _, gid, idx = data.split(":")
+            self._lb_toggle_do(chat, mid, gid, int(idx))
+        elif data.startswith("lbadd:"):
+            self._lb_add_start(chat, mid, data[6:])
+        elif data.startswith("lbp:"):
+            _, gid, onoff = data.split(":")
+            self._lb_proxy_all(chat, mid, gid, onoff == "on")
+        elif data.startswith("lbsset:"):
+            _, gid, idx = data.split(":")
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "lb_spare", "gid": gid,
+                                 "idx": int(idx)}, 600)
+            self._show(chat, mid,
+                       "🛟 مقدار زاپاس را بفرستید (آی‌پی یا هاست‌نیم):",
+                       [[btn("❌ انصراف", f"lbsr:{gid}")]])
+        elif data.startswith("lbsgo:"):
+            _, gid, idx = data.split(":")
+            self._lb_replace(chat, mid, gid, int(idx), False)
+        elif data.startswith("lbsgoc:"):
+            _, gid, idx = data.split(":")
+            self._lb_replace(chat, mid, gid, int(idx), True)
+        elif data.startswith("lbsdel:"):
+            _, gid, idx = data.split(":")
+            self._lb_spare_del(chat, mid, gid, int(idx))
         elif data.startswith("ct:"):
             rid = data[3:]
             acc, zid = self._cf_ctx(chat, rid)
@@ -1019,6 +1061,12 @@ class Router:
             [btn(f"⏱ TTL: {self._ttl_label(r.get('ttl'))}", f"cfttl:{rid}"),
              btn(f'🌐 Proxy: {"روشن" if r.get("proxied") else "خاموش"}',
                  f"cfpx:{rid}")],
+        ]
+        if str(r.get("type") or "").upper() in ("A", "AAAA", "CNAME"):
+            kb.append([btn("🛟 آیپی زاپاس", f"lbss:{rid}", "success"),
+                       btn("⚙️ تنظیمات لود بالانسر", f"lbs:{rid}",
+                           "success")])
+        kb += [
             [btn("🔗 CNAME به این", "cref", "primary"),
              btn("⭐ حذف از منتخب" if faved else "⭐ افزودن به منتخب",
                  f"favtg:{rid}", "primary")],
@@ -1474,6 +1522,69 @@ class Router:
                         for l in locs[:40]])
             kb.append([btn("🔙 انصراف", f'hzs:{pend["acc"]}:0')])
             self.bot.send(chat, "🌍 لوکیشن (دیتاسنتر) را انتخاب کنید:", kb)
+        elif pend.get("type") == "lb_weight":
+            from lb import get_cfg, save_cfg
+            try:
+                v = float(text.strip())
+                assert v >= 0
+            except (ValueError, AssertionError):
+                self.bot.send(chat, "❌ عدد نامعتبر است.")
+                return
+            sess = self.store.get_json(f'lbg:{pend["gid"]}', {}) or {}
+            key = f'lb:cf:{sess.get("zid")}:{sess.get("name")}'
+            cfg = get_cfg(self.store, key)
+            entries = [e for e in self._lb_entries(sess) if True]
+            if pend["idx"] < len(entries):
+                (cfg.get("weights") or {}).__setitem__(
+                    entries[pend["idx"]]["content"], v)
+                cfg["weights"] = cfg.get("weights") or {}
+                save_cfg(self.store, key, cfg)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ ذخیره شد.")
+            self._lb_render(chat, 0, pend["gid"])
+        elif pend.get("type") == "lb_spare":
+            sess = self.store.get_json(f'lbg:{pend["gid"]}', {}) or {}
+            entries = [e for e in self._lb_entries(sess) if e["on"]]
+            if pend["idx"] >= len(entries):
+                self.store.delete(f"pend:{chat}")
+                self.bot.send(chat, "❌ مورد پیدا نشد.")
+                return
+            v = text.strip()
+            import ipaddress as _ip
+
+            def _is_ip(x):
+                try:
+                    _ip.ip_address(x)
+                    return True
+                except ValueError:
+                    return False
+            typ = "A" if _is_ip(v) and "." in v else ("AAAA" if _is_ip(v) else "CNAME")
+            key = f'lb:cf:{sess.get("zid")}:{sess.get("name")}'
+            from lb import get_cfg, save_cfg
+            cfg = get_cfg(self.store, key)
+            (cfg.get("spares") or {}).__setitem__(
+                entries[pend["idx"]]["content"], {"type": typ, "content": v})
+            cfg["spares"] = cfg.get("spares") or {}
+            save_cfg(self.store, key, cfg)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ زاپاس ذخیره شد.")
+            self._lb_spare_home_gid(chat, 0, pend["gid"])
+        elif pend.get("type") == "lb_add":
+            sess = self.store.get_json(f'lbg:{pend["gid"]}', {}) or {}
+            parts = text.split()
+            if len(parts) < 2:
+                self.bot.send(chat, "❌ قالب درست نیست (مثلاً <code>A 1.2.3.4</code>).")
+                return
+            try:
+                client = self._cf_client(sess.get("acc", 0))
+                client.add_record(sess["zid"], parts[0].upper(),
+                                  sess["name"], parts[1], 1, False)
+                self.bot.send(chat, "✅ آی‌پی اضافه شد.")
+            except (IndexError, CfError) as e:
+                self.bot.send(chat, f"❌ نشد: {esc(e)}")
+                return
+            self.store.delete(f"pend:{chat}")
+            self._lb_render(chat, 0, pend["gid"])
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
@@ -2552,6 +2663,320 @@ class Router:
               [btn("📊 بررسی الان", "srvmonrun")],
               [btn("🏠 خانه", "menu")]]
         self._show(chat, mid, txt, kb)
+
+    # ---------- Load balancer ----------
+
+    def _lb_group(self, acc: int, zid: str, name: str):
+        from lb import get_cfg, key_for
+        try:
+            client = self._cf_client(acc)
+            recs = client.records(zid) or []
+        except (IndexError, CfError) as e:
+            return None, f"❌ خطای کلادفلر: {esc(e)}"
+        group = [r for r in recs
+                 if str(r.get("name") or "") == name
+                 and str(r.get("type") or "").upper()
+                 in ("A", "AAAA", "CNAME")]
+        key = key_for(zid, name)
+        return {"client": client, "group": group,
+                "cfg": get_cfg(self.store, key), "key": key}, ""
+
+    def _lb_settings(self, chat: int, mid: int, rid: str) -> None:
+        from lb import new_gid
+        acc, zid = self._cf_ctx(chat, rid)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        ctx, err = self._lb_group(acc, zid, "")
+        if err and not ctx:
+            self._show(chat, mid, err, home_kb())
+            return
+        # find record name
+        try:
+            recs = ctx["client"].records(zid) or []
+        except CfError as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        r = next((x for x in recs if x.get("id") == rid), None)
+        if not r:
+            self._show(chat, mid, "❌ رکورد پیدا نشد.", home_kb())
+            return
+        gid = new_gid(self.store, acc, zid, str(r.get("name")))
+        self.store.put_json(f"lbg:{gid}",
+                            {"acc": acc, "zid": zid,
+                             "name": str(r.get("name")), "rid": rid}, 86400)
+        self._lb_render(chat, mid, gid)
+
+    def _lb_settings_gid(self, chat: int, mid: int, gid: str) -> None:
+        self._lb_render(chat, mid, gid)
+
+    def _lb_render(self, chat: int, mid: int, gid: str) -> None:
+        from lb import get_cfg, entries_of, fa_num
+        sess = self.store.get_json(f"lbg:{gid}", {}) or {}
+        acc, zid, name = sess.get("acc", 0), sess.get("zid", ""), \
+            sess.get("name", "")
+        if not zid or not name:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        try:
+            client = self._cf_client(acc)
+            recs = client.records(zid) or []
+        except (IndexError, CfError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        group = [r for r in recs
+                 if str(r.get("name") or "") == name
+                 and str(r.get("type") or "").upper()
+                 in ("A", "AAAA", "CNAME")]
+        key = f"lb:cf:{zid}:{name}"
+        cfg = get_cfg(self.store, key)
+        entries = entries_of(group, cfg)
+        on_n = sum(1 for e in entries if e["on"])
+        lines = ["⚖️ تنظیمات لود بالانسر IP", "",
+                 f"📛 ساب‌دامین: <code>{esc(name)}</code>",
+                 f"🌍 آی‌پی‌ها: {on_n} فعال از {len(entries)}", ""]
+        kb = []
+        if not entries:
+            lines.append("📭 هنوز آی‌پی‌ای اضافه نشده.")
+        else:
+            for i, e in enumerate(entries):
+                lines.append(f'{i + 1}) {"🟢" if e["on"] else "🔴"} '
+                             f'<code>{esc(e["content"])}</code> — وزن {e["weight"]}'
+                             + ("" if e["on"] else " (غیرفعال)"))
+            lines += ["",
+                      "وزن و فعال/غیرفعال هر آی‌پی را از دکمه‌های زیر تغییر بده؛ زاپاس را از دکمهٔ 🛟 زیر."]
+            for i, e in enumerate(entries):
+                kb.append([btn(f"بالانسر{str(i + 1).translate(str.maketrans('0123456789', '۰۱۲۳۴۵۶۷۸۹'))}",
+                               f"lbw:{gid}:{i}"),
+                           btn("⏸ غیرفعال" if e["on"] else "▶️ فعال",
+                               f"lbt:{gid}:{i}")])
+        kb.append([btn("➕ افزودن آی‌پی", f"lbadd:{gid}")])
+        if on_n > 0:
+            kb.append([btn("🟠 Proxy همه روشن", f"lbp:{gid}:on"),
+                       btn("⚪️ Proxy همه خاموش", f"lbp:{gid}:off")])
+        kb.append([btn("🛟 آیپی زاپاس", f"lbsh:{gid}", "success")])
+        rid = sess.get("rid", "")
+        kb.append([btn("🔙 بازگشت", f"cfr:{rid}" if rid else "zones")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _lb_weight_ask(self, chat: int, mid: int, gid: str, idx: int) -> None:
+        self.store.put_json(f"pend:{chat}",
+                            {"type": "lb_weight", "gid": gid,
+                             "idx": idx}, 600)
+        self._show(chat, mid,
+                   "⚖️ وزن جدید را بفرستید (عدد ۰ یا بیشتر):",
+                   [[btn("⬅️ انصراف", f"lbsr:{gid}")]])
+
+    def _lb_toggle_ask(self, chat: int, mid: int, gid: str, idx: int) -> None:
+        from lb import entries_of, get_cfg, key_for
+        sess = self.store.get_json(f"lbg:{gid}", {}) or {}
+        entries = self._lb_entries(sess)
+        if idx >= len(entries):
+            self._show(chat, mid, "❌ مورد پیدا نشد.", home_kb())
+            return
+        e = entries[idx]
+        self._show(chat, mid,
+                   (f'⏸ این آی‌پی از لود بالانسر حذف (غیرفعال) شود؟'
+                    if e["on"] else
+                    f'▶️ این آی‌پی به لود بالانسر اضافه (فعال) شود؟')
+                   + f"\n\n<code>{esc(e['content'])}</code>",
+                   [[btn("✅ بله", f"lbtc:{gid}:{idx}"),
+                     btn("❌ انصراف", f"lbsr:{gid}")]])
+
+    def _lb_entries(self, sess: dict):
+        from lb import entries_of, get_cfg
+        try:
+            client = self._cf_client(sess.get("acc", 0))
+            recs = client.records(sess.get("zid", "")) or []
+        except (IndexError, CfError):
+            return []
+        group = [r for r in recs
+                 if str(r.get("name") or "") == sess.get("name")
+                 and str(r.get("type") or "").upper()
+                 in ("A", "AAAA", "CNAME")]
+        return entries_of(group, get_cfg(
+            self.store, f'lb:cf:{sess.get("zid")}:{sess.get("name")}'))
+
+    def _lb_toggle_do(self, chat: int, mid: int, gid: str, idx: int) -> None:
+        from lb import get_cfg, save_cfg, key_for
+        sess = self.store.get_json(f"lbg:{gid}", {}) or {}
+        entries = self._lb_entries(sess)
+        if idx >= len(entries):
+            self._show(chat, mid, "❌ مورد پیدا نشد.", home_kb())
+            return
+        e = entries[idx]
+        key = key_for(sess.get("zid", ""), sess.get("name", ""))
+        cfg = get_cfg(self.store, key)
+        try:
+            client = self._cf_client(sess.get("acc", 0))
+            if e["on"]:
+                if e["id"]:
+                    client.del_record(sess["zid"], e["id"])
+                dis = cfg.get("disabled") or []
+                dis.append({"type": e["type"], "content": e["content"],
+                            "proxied": e["proxied"], "ttl": e["ttl"]})
+                cfg["disabled"] = dis
+            else:
+                client.add_record(sess["zid"], e["type"],
+                                  sess["name"], e["content"],
+                                  e["ttl"] or 1, bool(e["proxied"]))
+                cfg["disabled"] = [d for d in (cfg.get("disabled") or [])
+                                   if str((d or {}).get("content")) != e["content"]]
+            save_cfg(self.store, key, cfg)
+        except (IndexError, CfError) as ex:
+            self._show(chat, mid, f"❌ خطا: {esc(ex)}", home_kb())
+            return
+        self._lb_render(chat, mid, gid)
+
+    def _lb_add_start(self, chat: int, mid: int, gid: str) -> None:
+        self.store.put_json(f"pend:{chat}",
+                            {"type": "lb_add", "gid": gid}, 600)
+        self._show(chat, mid,
+                   "➕ نوع و مقدار آی‌پی جدید را بفرستید (مثلاً <code>A 1.2.3.4</code>):",
+                   [[btn("⬅️ انصراف", f"lbsr:{gid}")]])
+
+    def _lb_proxy_all(self, chat: int, mid: int, gid: str, on: bool) -> None:
+        from lb import get_cfg
+        sess = self.store.get_json(f"lbg:{gid}", {}) or {}
+        entries = self._lb_entries(sess)
+        try:
+            client = self._cf_client(sess.get("acc", 0))
+            for e in entries:
+                if not e["on"] or not e["id"]:
+                    continue
+                try:
+                    client.update_record(sess["zid"],
+                                         {"id": e["id"], "type": e["type"],
+                                          "name": sess["name"],
+                                          "content": e["content"],
+                                          "ttl": e["ttl"], "proxied": True},
+                                         proxied=on)
+                except CfError:
+                    pass
+        except (IndexError, CfError) as ex:
+            self._show(chat, mid, f"❌ {esc(ex)}", home_kb())
+            return
+        self._lb_render(chat, mid, gid)
+
+    def _lb_spare_home(self, chat: int, mid: int, rid: str) -> None:
+        from lb import new_gid
+        acc, zid = self._cf_ctx(chat, rid)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        try:
+            recs = self._cf_client(acc).records(zid) or []
+        except (IndexError, CfError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        r = next((x for x in recs if x.get("id") == rid), None)
+        if not r:
+            self._show(chat, mid, "❌ رکورد پیدا نشد.", home_kb())
+            return
+        gid = new_gid(self.store, acc, zid, str(r.get("name")))
+        self.store.put_json(f"lbg:{gid}",
+                            {"acc": acc, "zid": zid,
+                             "name": str(r.get("name")), "rid": rid}, 86400)
+        self._lb_spare_home_gid(chat, mid, gid)
+
+    def _lb_spare_home_gid(self, chat: int, mid: int, gid: str) -> None:
+        from lb import get_cfg, spare_of
+        sess = self.store.get_json(f"lbg:{gid}", {}) or {}
+        entries = self._lb_entries(sess)
+        cfg = get_cfg(self.store,
+                      f'lb:cf:{sess.get("zid")}:{sess.get("name")}')
+        lines = ["🛟 زاپاس گروه", ""]
+        kb = []
+        for i, e in enumerate(entries):
+            if not e["on"]:
+                continue
+            sp = spare_of(cfg, e["content"])
+            lines.append(f'{i + 1}) <code>{esc(e["content"])}</code> → '
+                         + (f'<code>{esc(sp["content"])}</code>' if sp
+                            else "بدون زاپاس"))
+            kb.append([btn(f'🛟 {e["content"][:20]}', f"lbsm:{gid}:{i}")])
+        kb.append([btn("🔙 بازگشت", f'lbsr:{gid}' if False else f'lbs:{sess.get("rid", "")}' if sess.get("rid") else "zones"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _lb_spare_menu(self, chat: int, mid: int, gid: str, idx: int) -> None:
+        from lb import get_cfg, spare_of
+        sess = self.store.get_json(f"lbg:{gid}", {}) or {}
+        entries = [e for e in self._lb_entries(sess) if e["on"]]
+        on_entries = entries
+        if idx >= len(on_entries):
+            self._show(chat, mid, "❌ مورد پیدا نشد.", home_kb())
+            return
+        e = on_entries[idx]
+        # map back to full-list index
+        full = self._lb_entries(sess)
+        fi = next((k for k, x in enumerate(full)
+                   if x["content"] == e["content"] and x["on"]), idx)
+        cfg = get_cfg(self.store,
+                      f'lb:cf:{sess.get("zid")}:{sess.get("name")}')
+        sp = spare_of(cfg, e["content"])
+        lines = [f'🛟 زاپاس — <code>{esc(e["content"])}</code> ({e["type"]})', "",
+                 f'زاپاس فعلی: <code>{esc(sp["content"])}</code> ({sp["type"]})' if sp
+                 else "هنوز زاپاسی تعیین نشده.", "",
+                 "اگر این آی‌پی فیلتر شد، با «🔄 جایگزینی» رکورد DNS به زاپاس عوض می‌شود؛",
+                 "بعداً با همان دکمه می‌توانی به اصلی برگردی."]
+        kb = [[btn("✏️ تغییر زاپاس" if sp else "➕ تعیین زاپاس",
+                   f"lbsset:{gid}:{fi}")]]
+        if sp:
+            kb.append([btn(f'🔄 جایگزینی با {sp["content"][:24]}',
+                           f"lbsgo:{gid}:{fi}")])
+            kb.append([btn("❌ حذف زاپاس", f"lbsdel:{gid}:{fi}")])
+        kb.append([btn("🔙 بازگشت", f"lbsh:{gid}"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _lb_replace(self, chat: int, mid: int, gid: str, idx: int,
+                    confirm: bool) -> None:
+        from lb import get_cfg, spare_of, save_cfg
+        sess = self.store.get_json(f"lbg:{gid}", {}) or {}
+        entries = self._lb_entries(sess)
+        if idx >= len(entries):
+            self._show(chat, mid, "❌ مورد پیدا نشد.", home_kb())
+            return
+        e = entries[idx]
+        cfg = get_cfg(self.store,
+                      f'lb:cf:{sess.get("zid")}:{sess.get("name")}')
+        sp = spare_of(cfg, e["content"])
+        if not sp:
+            self._show(chat, mid, "❌ زاپاسی تعیین نشده.", home_kb())
+            return
+        if not confirm:
+            self._show(chat, mid,
+                       f'🔄 رکورد <code>{esc(e["content"])}</code> به '
+                       f'<code>{esc(sp["content"])}</code> عوض شود؟',
+                       [[btn("✅ بله", f"lbsgoc:{gid}:{idx}"),
+                         btn("❌ انصراف", f"lbsm:{gid}:{idx}")]])
+            return
+        try:
+            client = self._cf_client(sess.get("acc", 0))
+            if e["id"]:
+                client.del_record(sess["zid"], e["id"])
+            client.add_record(sess["zid"], sp.get("type", e["type"]),
+                              sess["name"], sp["content"], 1, False)
+        except (IndexError, CfError) as ex:
+            self._show(chat, mid, f"❌ نشد: {esc(ex)}", home_kb())
+            return
+        self.bot.send(chat, "✅ جایگزینی انجام شد.")
+        self._lb_render(chat, 0, gid)
+
+    def _lb_spare_del(self, chat: int, mid: int, gid: str, idx: int) -> None:
+        from lb import get_cfg, save_cfg
+        sess = self.store.get_json(f"lbg:{gid}", {}) or {}
+        entries = [e for e in self._lb_entries(sess) if e["on"]]
+        if idx >= len(entries):
+            self._show(chat, mid, "❌ مورد پیدا نشد.", home_kb())
+            return
+        key = f'lb:cf:{sess.get("zid")}:{sess.get("name")}'
+        cfg = get_cfg(self.store, key)
+        (cfg.get("spares") or {}).pop(entries[idx]["content"], None)
+        save_cfg(self.store, key, cfg)
+        self.bot.send(chat, "✅ زاپاس حذف شد.")
+        self._lb_spare_home_gid(chat, 0, gid)
 
     # ---------- Linode ----------
 
