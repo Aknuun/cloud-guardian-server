@@ -150,8 +150,18 @@ def _run(bot, store, panels, admin_id, cf_accs, pg_client, force,
             last = 0
         if last and now_ms - last < max(1, int(cfg.get("intervalMin", 25))) * 60000:
             return res
+    import re as _re
+    dom_re = _re.compile(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$", _re.I)
+    ip_re = _re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+
+    def _dom(v):
+        v = str(v or "")
+        return v.lower() if dom_re.match(v) and not ip_re.match(v) else ""
+
     changed, checked = 0, 0
+    pairs = []
     for p in panels or []:
+        pid = str(p.get("url"))
         try:
             c = pg_client(p)
             token = c.login()
@@ -161,42 +171,62 @@ def _run(bot, store, panels, admin_id, cf_accs, pg_client, force,
         for h in hosts or []:
             if not isinstance(h, dict):
                 continue
-            domains = []
-            for field in ("address", "sni", "host"):
-                v = h.get(field)
+            hid = str(h.get("id") or "")
+            base = pid + ":" + hid
+            if base in (cfg.get("exceptions") or []):
+                continue
+            exc_f = set()
+            for f in ("host", "address", "sni"):
+                if base + ":" + f in (cfg.get("exceptions") or []) or base in (cfg.get("exceptions") or []):
+                    exc_f.add(f)
+            allowed = []
+            for f in ("address", "sni", "host"):
+                if f in exc_f:
+                    continue
+                v = h.get(f)
                 vals = v if isinstance(v, list) else ([v] if v else [])
-                domains.extend(str(x) for x in vals if x)
-            domains = sorted(set(domains))
-            for dv in domains[:int(cfg.get("batch", 60))]:
-                if only and only != dv:
-                    continue
-                if dv in (cfg.get("exceptions") or []):
-                    continue
-                checked += 1
-                ping = check_ping(dv, [n for n in IR_NODES
-                                       if n["city"] in cfg["citiesSel"]])
-                if blocked_cities(ping, cfg["citiesSel"],
+                for x in vals:
+                    d = _dom(x)
+                    if d:
+                        allowed.append(d)
+            allowed = sorted(set(allowed))
+            if allowed:
+                pairs.append({"panel": p, "token": token, "host": h,
+                              "domains": allowed})
+    for item in pairs:
+        if checked >= int(cfg.get("batch", 60)):
+            break
+        p, token, h = item["panel"], item["token"], item["host"]
+        for dv in item["domains"]:
+            if checked >= int(cfg.get("batch", 60)):
+                break
+            if only and only != dv:
+                continue
+            checked += 1
+            ping = check_ping(dv, [n for n in IR_NODES
+                                   if n["city"] in cfg["citiesSel"]])
+            if blocked_cities(ping, cfg["citiesSel"],
+                              int(cfg.get("maxOk", 0))) < int(cfg.get("cities", 2)):
+                continue
+            if not _resolve(dv):
+                continue
+            ok = True
+            for _ in range(int(cfg.get("recheckCount", 1))):
+                time.sleep(max(1, int(cfg.get("recheckMin", 1))) * 60)
+                ping2 = check_ping(dv, [n for n in IR_NODES
+                                        if n["city"] in cfg["citiesSel"]])
+                if blocked_cities(ping2, cfg["citiesSel"],
                                   int(cfg.get("maxOk", 0))) < int(cfg.get("cities", 2)):
-                    continue
-                if not _resolve(dv):
-                    continue
-                ok = True
-                for _ in range(int(cfg.get("recheckCount", 1))):
-                    time.sleep(max(1, int(cfg.get("recheckMin", 1))) * 60)
-                    ping2 = check_ping(dv, [n for n in IR_NODES
-                                            if n["city"] in cfg["citiesSel"]])
-                    if blocked_cities(ping2, cfg["citiesSel"],
-                                      int(cfg.get("maxOk", 0))) < int(cfg.get("cities", 2)):
-                        ok = False
-                        break
-                if not ok:
-                    continue
-                if changed >= int(cfg.get("maxChanges", 8)):
+                    ok = False
                     break
-                if _swap(bot, p, token, h, dv, cf_accs, admin_id):
-                    changed += 1
+            if not ok:
+                continue
             if changed >= int(cfg.get("maxChanges", 8)):
                 break
+            if _swap(bot, store, p, token, h, dv, cf_accs, admin_id):
+                changed += 1
+        if changed >= int(cfg.get("maxChanges", 8)):
+            break
     cfg["last_run"] = _dt.datetime.now(
         _dt.timezone.utc).isoformat()
     cfg["last_summary"] = f"بررسی {checked} دامنه — {changed} تعویض."
@@ -205,7 +235,16 @@ def _run(bot, store, panels, admin_id, cf_accs, pg_client, force,
     return res
 
 
-def _swap(bot, panel, panel_token: str, host, old_name: str, cf_accs,
+def _log(store, entry: dict) -> None:
+    log = store.get_json("host_filter_log", []) or []
+    import datetime as _dt
+    entry = dict(entry)
+    entry.setdefault("ts", _dt.datetime.now(_dt.timezone.utc).isoformat())
+    log.append(entry)
+    store.put_json("host_filter_log", log[-40:])
+
+
+def _swap(bot, store, panel, panel_token: str, host, old_name: str, cf_accs,
           admin_id: int) -> bool:
     """Create numbered clone + repoint panel host. Returns True on change."""
     from cf import Cf
@@ -275,6 +314,8 @@ def _swap(bot, panel, panel_token: str, host, old_name: str, cf_accs,
                 except Exception:
                     pass
                 return False
+            _log(store, {"kind": "swap", "panel": panel.get("name"),
+                         "from": old_name, "to": new_name})
             try:
                 bot.send(admin_id,
                          f"🔄 تعویض خودکار\n<code>{old_name}</code> → "

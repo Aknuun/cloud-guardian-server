@@ -392,14 +392,89 @@ class Router:
         elif data == "hflist":
             self._hf_hosts(chat, mid)
         elif data.startswith("hfexc:"):
+            _, pid, hid, field = data.split(":")
+            self._hf_exc_toggle(chat, mid, pid, hid, field)
+        elif data == "hfexcall":
             from hostfilter import get_cfg, save_cfg
             cfg = get_cfg(self.store)
-            ex = cfg.get("exceptions") or []
-            dv = data[6:]
-            cfg["exceptions"] = [x for x in ex if x != dv] \
-                if dv in ex else ex + [dv]
+            ex = set(cfg.get("exceptions") or [])
+            for key in self._hf_all_keys():
+                ex.add(key)
+            cfg["exceptions"] = sorted(ex)
             save_cfg(self.store, cfg)
             self._hf_hosts(chat, mid)
+        elif data == "hfunexcall":
+            from hostfilter import get_cfg, save_cfg
+            cfg = get_cfg(self.store)
+            cfg["exceptions"] = []
+            save_cfg(self.store, cfg)
+            self._hf_hosts(chat, mid)
+        elif data.startswith("hfexcpanel:"):
+            from hostfilter import get_cfg, save_cfg
+            cfg = get_cfg(self.store)
+            ex = set(cfg.get("exceptions") or [])
+            for key in self._hf_all_keys(pid=int(data[11:])):
+                ex.add(key)
+            cfg["exceptions"] = sorted(ex)
+            save_cfg(self.store, cfg)
+            self._hf_hosts(chat, mid)
+        elif data.startswith("hfunexcpanel:"):
+            from hostfilter import get_cfg, save_cfg
+            cfg = get_cfg(self.store)
+            pre = str(int(data[13:])) + ":"
+            cfg["exceptions"] = [x for x in (cfg.get("exceptions") or [])
+                                 if not str(x).startswith(pre)]
+            save_cfg(self.store, cfg)
+            self._hf_hosts(chat, mid)
+        elif data == "hfgmode":
+            self.store.put_json(f"hfsel:{chat}", {"on": True, "sel": []}, 1800)
+            self._hf_hosts(chat, mid)
+        elif data == "hfgdone":
+            self.store.delete(f"hfsel:{chat}")
+            self._hf_hosts(chat, mid)
+        elif data == "hfgall":
+            sel = self.store.get_json(f"hfsel:{chat}", {}) or {}
+            sel["sel"] = self._hf_all_keys()
+            sel["on"] = True
+            self.store.put_json(f"hfsel:{chat}", sel, 1800)
+            self._hf_hosts(chat, mid)
+        elif data == "hfgclr":
+            self.store.put_json(f"hfsel:{chat}", {"on": True, "sel": []}, 1800)
+            self._hf_hosts(chat, mid)
+        elif data.startswith("hfgs:"):
+            _, pid, hid = data.split(":")
+            sel = self.store.get_json(f"hfsel:{chat}", {}) or {}
+            cur = set(sel.get("sel") or [])
+            key = pid + ":" + hid
+            if key in cur:
+                cur.discard(key)
+            else:
+                cur.add(key)
+            sel.update(on=True, sel=sorted(cur))
+            self.store.put_json(f"hfsel:{chat}", sel, 1800)
+            self._hf_hosts(chat, mid)
+        elif data == "hfgexc":
+            from hostfilter import get_cfg, save_cfg
+            cfg = get_cfg(self.store)
+            ex = set(cfg.get("exceptions") or [])
+            sel = (self.store.get_json(f"hfsel:{chat}", {}) or {}).get("sel") or []
+            for key in sel:
+                ex.add(key)
+            cfg["exceptions"] = sorted(ex)
+            save_cfg(self.store, cfg)
+            self.store.delete(f"hfsel:{chat}")
+            self._hf_hosts(chat, mid)
+        elif data == "hfgunexc":
+            from hostfilter import get_cfg, save_cfg
+            cfg = get_cfg(self.store)
+            sel = set((self.store.get_json(f"hfsel:{chat}", {}) or {}).get("sel") or [])
+            cfg["exceptions"] = [x for x in (cfg.get("exceptions") or [])
+                                 if x not in sel and not any(x == k or x.startswith(k + ":") for k in sel)]
+            save_cfg(self.store, cfg)
+            self.store.delete(f"hfsel:{chat}")
+            self._hf_hosts(chat, mid)
+        elif data == "hfhist":
+            self._hf_hist(chat, mid)
         elif data == "hfsetch":
             self._hf_settings(chat, mid)
         elif data.startswith("hfnum:"):
@@ -2051,35 +2126,141 @@ class Router:
               [btn("🏠 خانه", "menu")]]
         self._show(chat, mid, "\n".join(lines), kb)
 
-    def _hf_hosts(self, chat: int, mid: int = 0) -> None:
+    def _hf_all_keys(self, pid=None):
+        from pg import Pg as _Pg
+        keys = []
+        panels = self._pg_panels()
+        for pi, p in enumerate(panels):
+            if pid is not None and pi != pid:
+                continue
+            try:
+                pgc = _Pg(p["url"], p["username"], p["password"])
+                hosts = pgc.hosts(pgc.login())
+            except Exception:
+                continue
+            for h in hosts or []:
+                if not isinstance(h, dict):
+                    continue
+                hid = str(h.get("id") or "")
+                for f in ("host", "address", "sni"):
+                    keys.append(f"{pi}:{hid}:{f}")
+        return keys
+
+    def _hf_exc_toggle(self, chat: int, mid: int, pid: str, hid: str,
+                       field: str) -> None:
+        from hostfilter import get_cfg, save_cfg
+        cfg = get_cfg(self.store)
+        ex = set(cfg.get("exceptions") or [])
+        key = f"{pid}:{hid}:{field}"
+        if key in ex:
+            ex.discard(key)
+        else:
+            ex.add(key)
+        cfg["exceptions"] = sorted(ex)
+        save_cfg(self.store, cfg)
+        self._hf_hosts(chat, mid)
+
+    @staticmethod
+    def _hf_short(t: str, n: int = 20) -> str:
+        t = str(t or "")
+        return t if len(t) <= n else t[:n - 1] + "…"
+
+    def _hf_hosts(self, chat: int, mid: int = 0, note: str = "") -> None:
         from hostfilter import get_cfg
         from pg import Pg as _Pg
         cfg = get_cfg(self.store)
+        exc = set(cfg.get("exceptions") or [])
+        sel = self.store.get_json(f"hfsel:{chat}", {}) or {}
+        sel_mode = bool(sel.get("on"))
+        sel_set = set(sel.get("sel") or [])
         panels = self._pg_panels()
-        kb = []
-        lines = ["📋 لیست هاست‌ها", ""]
+        lines = ["📋 لیست هاست‌ها (فقط فعال‌ها)", "",
+                 "سه ستون: Host | Address | Network — کلیک هر کدام = استثنای همون فیلد (آبی در چرخه · خاکستری مستثنا)",
+                 "⚡ برای سرعت بیشتر، هاست‌های اضافه را گروهی استثنا کن 👇", ""]
+        if note:
+            lines.append(note)
+            lines.append("")
+        kb = [[btn("🚫 استثنای همه", "hfexcall"),
+               btn("✅ لغو استثنای همه", "hfunexcall")]]
+        n = 0
         for pi, p in enumerate(panels):
             try:
                 pgc = _Pg(p["url"], p["username"], p["password"])
                 hosts = pgc.hosts(pgc.login())
-            except Exception as e:
-                lines.append(f'• {p.get("name")}: خطا ({str(e)[:60]})')
+            except Exception:
                 continue
-            lines.append(f'🖥 {p.get("name")} ({len(hosts)} هاست):')
-            for h in hosts[:30]:
+            lines += ["", f'— 🖥 {p.get("name") or p.get("url")} —']
+            kb.append([btn("🚫 همهٔ این پنل", f"hfexcpanel:{pi}"),
+                       btn("✅ فعال‌سازی همه", f"hfunexcpanel:{pi}")])
+            for h in hosts or []:
                 if not isinstance(h, dict):
                     continue
-                doms = []
-                for field in ("address", "sni", "host"):
-                    v = h.get(field)
-                    vals = v if isinstance(v, list) else ([v] if v else [])
-                    doms.extend(str(x) for x in vals if x)
-                for dv in sorted(set(doms))[:6]:
-                    mark = "🚫 " if dv in (cfg.get("exceptions") or []) else ""
-                    kb.append([btn(f"{mark}{dv[:28]}", f"hfexc:{dv}")])
+                if h.get("is_disabled"):
+                    continue
+                n += 1
+                hid = str(h.get("id") or "")
+                key = f"{pi}:{hid}"
+                host_l = str(h.get("remark") or ((h.get("sni") or [""])[0] if isinstance(h.get("sni"), list) else "") or "host")[:22]
+                addr_l = str(((h.get("address") or [""])[0] if isinstance(h.get("address"), list) else h.get("address")) or "—")[:26]
+                sni_v = h.get("sni") if isinstance(h.get("sni"), list) else []
+                host_v = h.get("host") if isinstance(h.get("host"), list) else []
+                net_l = str((sni_v + host_v + ["—"])[0])[:26]
+                lines.append(f"{n}) {host_l} | {addr_l} | {net_l}")
+                if sel_mode:
+                    picked = key in sel_set
+                    kb.append([btn(f'{"✅ " if picked else "⬜ "}{self._hf_short(host_l)}',
+                                   f"hfgs:{pi}:{hid}",
+                                   "primary" if picked else "plain"),
+                               btn(f'{"✅ " if picked else "⬜ "}{self._hf_short(addr_l)}',
+                                   f"hfgs:{pi}:{hid}",
+                                   "primary" if picked else "plain"),
+                               btn(f'{"✅ " if picked else "⬜ "}{self._hf_short(net_l)}',
+                                   f"hfgs:{pi}:{hid}",
+                                   "primary" if picked else "plain")])
+                else:
+                    eH = key + ":host" in exc
+                    eA = key + ":address" in exc
+                    eN = key + ":sni" in exc
+                    kb.append([btn(f'{"⬜ " if eH else "✅ "}{self._hf_short(host_l)}',
+                                   f"hfexc:{pi}:{hid}:host",
+                                   "plain" if eH else "primary"),
+                               btn(f'{"⬜ " if eA else "✅ "}{self._hf_short(addr_l)}',
+                                   f"hfexc:{pi}:{hid}:address",
+                                   "plain" if eA else "primary"),
+                               btn(f'{"⬜ " if eN else "✅ "}{self._hf_short(net_l)}',
+                                   f"hfexc:{pi}:{hid}:sni",
+                                   "plain" if eN else "primary")])
+        if not n:
+            lines.append("📭 هاستی پیدا نشد.")
+        if sel_mode:
+            lines.append(f"🗂 {len(sel_set)} انتخاب شده:")
+            kb.append([btn("🚫 استثنا برای انتخاب‌ها", "hfgexc"),
+                       btn("✅ لغو استثنا", "hfgunexc")])
+            kb.append([btn("✅ انتخاب همه", "hfgall"),
+                       btn("🧹 پاک‌سازی", "hfgclr")])
+            kb.append([btn("❌ خروج از انتخاب", "hfgdone")])
+        else:
+            kb.append([btn("🗂 انتخاب گروهی", "hfgmode")])
+        kb.append([btn("📜 تاریخچه", "hfhist")])
         kb.append([btn("🔙 بازگشت", "hf"),
                    btn("🏠 خانه", "menu")])
-        self._show(chat, mid, "\n".join(lines), kb)
+        self._show(chat, mid, "\n".join(lines)[:3500], kb)
+
+    def _hf_hist(self, chat: int, mid: int = 0) -> None:
+        log = self.store.get_json("host_filter_log", []) or []
+        lines = ["📜 تاریخچه تعویض‌ها", ""]
+        for e in log[-15:]:
+            ts = str(e.get("ts", ""))[:16].replace("T", " ")
+            if e.get("kind") == "swap":
+                lines.append(f'{ts} · {e.get("from")} → {e.get("to")}')
+            else:
+                lines.append(f'{ts} · {e.get("kind")}')
+        if len(log) <= 1:
+            lines.append("📭 چیزی ثبت نشده.")
+        self._show(chat, mid, "\n".join(lines),
+                   [[btn("🔙 بازگشت", "hflist"),
+                     btn("🏠 خانه", "menu")]])
+
 
     def _hf_settings(self, chat: int, mid: int = 0) -> None:
         from hostfilter import get_cfg
