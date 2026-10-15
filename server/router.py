@@ -315,11 +315,17 @@ class Router:
                 self.store.put_json(f"pend:{chat}", {"type": "zsearch"}, 600)
                 self._show(chat, mid, "🔍 بخشی از نام یا مقدار رکورد را بفرستید:",
                            [[btn("❌ انصراف", "zones")]])
-        elif data in ("noop", "hf", "nd", "um",
+        elif data in ("noop", "hf",
                       "srv", "dommon", "fmail", "lb", "settings",
                       "zset", "selmode", "zmail", "ztraf", "cref", "rtraf"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
+        elif data == "settings":
+            self._settings_home(chat, mid)
+        elif data == "help":
+            self._help_list(chat, mid)
+        elif data.startswith("help:"):
+            self._help_show(chat, mid, data[5:])
         elif data == "arvan":
             self._arvan_home(chat, mid)
         elif data == "arvanacc":
@@ -633,6 +639,40 @@ class Router:
 
     def _soon(self, cb_id: str) -> None:
         self.bot.answer(cb_id, "⏳ در نسخه سروری به‌زودی")
+
+    # ---------- Settings & help ----------
+
+    GUIDES = {
+        "cf": ("☁️ کلودفلر", "دامنه‌ها را ببین، رکورد بساز/ویرایش/حذف کن، پروکسی و TTL را درجا عوض کن. جست‌وجو در همه رکوردها هم هست."),
+        "hz": ("🇩🇪 هتزنر", "سرورها را ببین، روشن/خاموش/ریبوت کن، رمز ریست کن، اسنپ‌شات بگیر، IPv4 جایگزین کن، سرور بساز."),
+        "ln": ("🟢 لینود", "مثل هتزنر: لیست، پاور، ریبوت، تغییرنام، حذف."),
+        "arvan": ("🇮🇷 آروان", "دامنه‌ها و رکوردهای DNS آروان + ابری (CDN)."),
+        "pg": ("🎛 پنل پاسارگارد", "کاربران هر پنل با درصد مصرف و انقضا؛ هشدار حجم/انقضا خودکار هم از همین پنل‌ها می‌آید."),
+        "rem": ("⏰ یادآورها", "متن + تاریخ شمسی (مثل 1404/06/20 14:30) بده تا سر ساعت خبرت کنم."),
+    }
+
+    def _settings_home(self, chat: int, mid: int = 0) -> None:
+        self._show(chat, mid,
+                   f"⚙️ تنظیمات و راهنما\n\n🤖 نسخه سرور: <code>{VERSION}</code>\n"
+                   "اجرا کامل روی سرور خودت؛ بدون KV و ورکر.",
+                   [[btn("📖 راهنمای بخش‌ها", "help")],
+                    [btn("🔙 بازگشت", "menu"),
+                     btn("🏠 خانه", "menu")]])
+
+    def _help_list(self, chat: int, mid: int = 0) -> None:
+        kb = [[btn(v[0], f"help:{k}")] for k, v in self.GUIDES.items()]
+        kb.append([btn("🔙 بازگشت", "settings"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "📖 راهنمای بخش‌ها:", kb)
+
+    def _help_show(self, chat: int, mid: int, key: str) -> None:
+        g = self.GUIDES.get(key)
+        if not g:
+            self._show(chat, mid, "❌", home_kb())
+            return
+        self._show(chat, mid, f"{g[0]}\n\n{g[1]}",
+                   [[btn("🔙 بازگشت", "help"),
+                     btn("🏠 خانه", "menu")]])
 
     # ---------- Cloudflare ----------
 
