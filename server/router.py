@@ -245,6 +245,22 @@ class Router:
         elif data.startswith("hzsu:"):
             _, i, sid, step = data.split(":")
             self._hz_op(chat, mid, int(i), sid, step)
+        elif data.startswith("hzsc:"):
+            i = int(data[5:])
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "hz_srv_remark", "acc": i}, 600)
+            self._show(chat, mid,
+                       "➕ ساخت سرور هتزنر\n\nنام سرور را بفرستید (بدون فاصله، مثلاً web1):",
+                       [[btn("🔙 انصراف", "hz")]])
+        elif data.startswith("hzsl:"):
+            _, i, loc = data.split(":")
+            self._hz_pick_plan(chat, mid, int(i), loc)
+        elif data.startswith("hzscp:"):
+            _, i, plan = data.split(":")
+            self._hz_pick_image(chat, mid, int(i), plan)
+        elif data.startswith("hzsci:"):
+            _, i, img = data.split(":")
+            self._hz_create(chat, mid, int(i), img)
         elif data.startswith("hzsv:"):
             _, i, sid, step, arg = data.split(":")
             self._hz_pick(chat, mid, int(i), sid, step, arg)
@@ -1434,6 +1450,30 @@ class Router:
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, "✅ ذخیره شد.")
             self._hf_settings(chat, 0)
+        elif pend.get("type") == "hz_srv_remark" and "remark" not in pend:
+            remark = text.strip()
+            if not remark or any(ch.isspace() for ch in remark):
+                self.bot.send(chat,
+                              "⚠️ نام سرور نباید فاصله داشته باشد. دوباره بفرستید:")
+                return
+            try:
+                locs = Hz(self._hz_accs()[pend["acc"]]["token"]).all(
+                    "/locations")
+            except (IndexError, HzError) as e:
+                self.store.delete(f"pend:{chat}")
+                self.bot.send(chat, f"❌ {esc(e)}")
+                return
+            if not locs:
+                self.store.delete(f"pend:{chat}")
+                self.bot.send(chat, "❌ لوکیشنی پیدا نشد.")
+                return
+            pend["remark"] = remark
+            self.store.put_json(f"pend:{chat}", pend, 600)
+            kb = grid2([btn(f'{l.get("city") or l.get("name")} ({l.get("name")})',
+                             f'hzsl:{pend["acc"]}:{l.get("name")}')
+                        for l in locs[:40]])
+            kb.append([btn("🔙 انصراف", f'hzs:{pend["acc"]}:0')])
+            self.bot.send(chat, "🌍 لوکیشن (دیتاسنتر) را انتخاب کنید:", kb)
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
@@ -2921,6 +2961,8 @@ class Router:
             return
         sel = self._hz_sel()
         kb = []
+        multi = len(accs) > 1
+        nm = accs[sel]["name"]
         if len(accs) > 1:
             kb.append([btn(f'{"✅ " if i == sel else "👤 "}{a["name"]}',
                            f"hzm:{i}") for i, a in enumerate(accs)][:4])
@@ -2941,6 +2983,8 @@ class Router:
                            f'hzsi:{sel}:{s["id"]}')])
         kb.append([btn("🖥 سرورها", f"hzs:{sel}:0"),
                    btn("👤 اکانت‌ها", "hzaccs")])
+        kb.append([btn(multi and f"➕ ساخت سرور در {nm}" or "➕ ساخت سرور",
+                       f"hzsc:{sel}")])
         kb.append([btn("🏠 خانه", "menu")])
         self._show(chat, mid, "\n".join(lines), kb)
 
@@ -3211,6 +3255,154 @@ class Router:
         self._show(chat, mid, f'⚠️ مطمئنید «{label}» روی «{s.get("name")}» انجام شود؟',
                    [[btn("✅ بله", f"hzok:{i}:{sid}:{step}"),
                      btn("❌ انصراف", back)]])
+
+    def _hz_pick_plan(self, chat: int, mid: int, i: int,
+                      loc: str) -> None:
+        try:
+            tok = self._hz_accs()[i]["token"]
+        except IndexError:
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        pend = self.store.get_json(f"pend:{chat}", {}) or {}
+        if pend.get("type") != "hz_srv_remark":
+            self._show(chat, mid, "⏳ عملیات منقضی شده.", home_kb())
+            return
+        try:
+            types = [t for t in Hz(tok).all("/server_types")
+                     if not t.get("deprecated")]
+        except HzError as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        avail = [t for t in types
+                 if any(x.get("location") == loc
+                        for x in (t.get("prices") or []))]
+        avail.sort(key=lambda t: float(
+            next((x for x in (t.get("prices") or [])
+                  if x.get("location") == loc), {}).get("price_monthly", {})
+            .get("net", 1e9) or 1e9))
+        pend["location"] = loc
+        self.store.put_json(f"pend:{chat}", pend, 600)
+        fam_label = {"cpx": "🧩 CPX · پردازنده AMD",
+                     "cx": "🧩 CX · پردازنده Intel",
+                     "cax": "🧩 CAX · پردازنده Ampere ARM",
+                     "ccx": "🧩 CCX · اختصاصی (Dedicated)",
+                     "other": "🧩 سایر پلن‌ها"}
+        kb = []
+        groups: dict = {}
+        for t in avail[:60]:
+            nm = str(t.get("name", "")).lower()
+            fam = next((f for f in ("cpx", "cx", "cax", "ccx")
+                        if nm.startswith(f)), "other")
+            groups.setdefault(fam, []).append(t)
+        for fam in ("cpx", "cx", "cax", "ccx", "other"):
+            arr = groups.get(fam) or []
+            if not arr:
+                continue
+            kb.append([btn(fam_label[fam], "noop", "plain")])
+            rows = []
+            for t in arr:
+                pm = next((x for x in (t.get("prices") or [])
+                           if x.get("location") == loc), {})
+                eur = ((pm.get("price_monthly") or {}).get("gross")
+                       or "?")
+                rows.append(btn(f'{t.get("name")} · {eur}€',
+                                f'hzscp:{i}:{t.get("id")}'))
+            kb.extend(grid2(rows))
+        kb.append([btn("🔙 بازگشت", "hz"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   f"💰 پلن سرور را انتخاب کن (لوکیشن: {loc}):", kb)
+
+    def _hz_pick_image(self, chat: int, mid: int, i: int,
+                       plan: str) -> None:
+        try:
+            tok = self._hz_accs()[i]["token"]
+        except IndexError:
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        pend = self.store.get_json(f"pend:{chat}", {}) or {}
+        if pend.get("type") != "hz_srv_remark":
+            self._show(chat, mid, "⏳ عملیات منقضی شده.", home_kb())
+            return
+        try:
+            stype = Hz(tok).call(f"/server_types/{plan}").get("server_type") \
+                or {}
+            imgs = Hz(tok).all("/images")
+        except HzError as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        arch = stype.get("architecture")
+        avail = [im for im in imgs
+                 if im.get("type") in ("system", "snapshot")
+                 and (not arch or im.get("architecture") == arch)]
+        avail.sort(key=lambda x: 0 if x.get("type") == "system" else 1)
+        if not avail:
+            self._show(chat, mid, "❌ تصویری پیدا نشد.", home_kb())
+            return
+        pend["planId"] = plan
+        self.store.put_json(f"pend:{chat}", pend, 600)
+        kb = grid2([btn(str(im.get("name") or im.get("description")
+                           or im.get("id")),
+                         f'hzsci:{i}:{im.get("id")}') for im in avail[:50]])
+        kb.append([btn("🔙 بازگشت", "hz"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "🖼️ تصویر (سیستم‌عامل) را انتخاب کنید:", kb)
+
+    def _hz_create(self, chat: int, mid: int, i: int, img: str) -> None:
+        import random as _r
+        import string as _s
+        try:
+            tok = self._hz_accs()[i]["token"]
+        except IndexError:
+            self._show(chat, mid, "❌ اکانت پیدا نشد.", home_kb())
+            return
+        pend = self.store.get_json(f"pend:{chat}", {}) or {}
+        if pend.get("type") != "hz_srv_remark" or "location" not in pend \
+                or "planId" not in pend:
+            self._show(chat, mid, "⏳ عملیات منقضی شده.", home_kb())
+            return
+        pw = "".join(_r.choice(_s.ascii_letters + _s.digits)
+                     for _ in range(16))
+        cloud_init = ("#cloud-config\n"
+                      "ssh_pwauth: true\n"
+                      "chpasswd:\n"
+                      f"  list: |\n    root:{pw}\n"
+                      "  expire: False\n")
+        try:
+            r = Hz(tok).call("/servers", "POST",
+                             {"name": pend["remark"],
+                              "server_type": str(pend["planId"]),
+                              "image": str(img),
+                              "location": str(pend["location"]),
+                              "start_after_create": True,
+                              "user_data": cloud_init})
+        except HzError as e:
+            self._show(chat, mid, f"❌ ساخت ناموفق بود:\n{esc(e)}",
+                       home_kb())
+            return
+        if (r or {}).get("error"):
+            from hz import err_fa
+            self._show(chat, mid,
+                       f"❌ ساخت ناموفق بود:\n{esc(err_fa(r))}", home_kb())
+            return
+        self.store.delete(f"pend:{chat}")
+        hs = (r or {}).get("server") or {}
+        ip = ((hs.get("public_net") or {}).get("ipv4") or {}).get("ip", "")
+        if ip:
+            lst = self._srv_list()
+            import time as _t
+            lst.append({"id": f's{int(_t.time())}{_r.randint(10, 99)}',
+                        "name": hs.get("name") or pend["remark"],
+                        "host": ip, "user": "root", "port": 22,
+                        "auth": "pass", "secret": pw,
+                        "note": f'Hetzner: {hs.get("name") or ""}'})
+            self.store.put_json("srv_list", lst)
+        self.bot.send(chat,
+                      "🎉 سرور هتزنر ساخته شد.\n"
+                      f"🔑 رمز root:\n<code>{esc(pw)}</code>\n\n"
+                      "⚠️ آن را امن نگه دار؛ دوباره نمایش داده نمی‌شود."
+                      + (f"\n🌐 آی‌پی: <code>{esc(ip)}</code>" if ip else ""),
+                      [[btn("🖥 سرورها", f"hzs:{i}:0")]])
 
     def _hz_pick(self, chat: int, mid: int, i: int, sid: str, step: str,
                  arg: str) -> None:
