@@ -440,8 +440,7 @@ class Router:
                            [[btn("❌ انصراف", "zones")]])
         elif data in ("noop",
                       "fmail",
-                      "zmail", "ztraf",
-                      "srvsub"):
+                      "zmail", "ztraf"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
         elif data == "sslm":
@@ -602,6 +601,26 @@ class Router:
             self._srv_pw_del_ask(chat, mid, data[9:])
         elif data.startswith("srvpwdely:"):
             self._srv_pw_del_do(chat, mid, data[10:])
+        elif data == "srvsub":
+            self._srv_sub_src(chat, mid)
+        elif data == "srvsubzone":
+            self._srv_sub_zones(chat, mid)
+        elif data == "srvsubfav":
+            self._srv_sub_favs(chat, mid)
+        elif data.startswith("srvsubz:"):
+            p = data.split(":", 2)
+            self._srv_sub_pick(chat, mid, p[1], p[2])
+        elif data.startswith("srvsubsel:"):
+            self._srv_sub_toggle(chat, mid, data[10:])
+        elif data.startswith("srvsubpg:"):
+            self._srv_sub_page(chat, mid, data[9:])
+        elif data == "srvsubsave":
+            self._srv_sub_save(chat, mid)
+        elif data.startswith("srvsubpw:"):
+            self._srv_sub_finish(chat, mid, data[9:], stored=True)
+        elif data == "srvsubcancel":
+            self.store.delete(f"srvsub:{chat}")
+            self._srv_home(chat, mid)
         elif data == "srvdel":
             lst = self._srv_list()
             kb = [[btn(f'🗑 {s.get("name")}', f'srvdelx:{s.get("id")}')]
@@ -2673,6 +2692,9 @@ class Router:
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, "✅ رمز ذخیره شد.")
             self._srv_pw_home(chat, 0)
+        elif pend.get("type") == "srv_sub_pw":
+            pw = text.strip()
+            self._srv_sub_finish(chat, 0, "", pw_override=("" if pw == "-" else pw))
         elif pend.get("type") == "srvmon_num":
             from monitors import srvmon_cfg, srvmon_save
             try:
@@ -3722,6 +3744,257 @@ class Router:
             pass
         self.store.put_json("srv_passwords", pws)
         self._srv_pw_home(chat, mid)
+
+    def _srv_sub_src(self, chat: int, mid: int) -> None:
+        self._show(chat, mid,
+                   "➕ افزودن سرور از ساب‌دامنه\n\nساب‌ها از کجا بیایند؟",
+                   [[btn("📁 از دامنه‌ها", "srvsubzone")],
+                    [btn("⭐ از منتخب‌ها", "srvsubfav")],
+                    [btn("⬅️ انصراف", "srv")]])
+
+    def _srv_sub_zones(self, chat: int, mid: int) -> None:
+        zs = self._cf_all_zones()
+        if not zs:
+            self._show(chat, mid, "📭 دامنه‌ای یافت نشد.",
+                       [[btn("🔙 بازگشت", "srvsub"), btn("🏠 خانه", "menu")]])
+            return
+        rows = [[btn(f'📁 {z.get("name")}', f'srvsubz:{z["_acc"]}:{z["id"]}')]
+                for z in zs]
+        rows.append([btn("🔙 بازگشت", "srvsub"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "📁 دامنه را انتخاب کنید:", rows)
+
+    def _srv_sub_favs(self, chat: int, mid: int) -> None:
+        favs = self._favs()
+        if not favs:
+            self._show(chat, mid, "📭 موردی در منتخب‌ها نیست.",
+                       [[btn("🔙 بازگشت", "srvsub"), btn("🏠 خانه", "menu")]])
+            return
+        items = []
+        by_zone = {}
+        for f in favs:
+            key = (f.get("acc"), f.get("zid"))
+            if key not in by_zone:
+                try:
+                    by_zone[key] = self._cf_client(f.get("acc", 0)) \
+                        .records(f.get("zid")) or []
+                except (IndexError, CfError):
+                    by_zone[key] = []
+            r = next((x for x in by_zone[key]
+                      if x.get("id") == f.get("rid")), None)
+            if not r:
+                continue
+            items.append({"label": str(r.get("name") or "?"),
+                          "name": r.get("name"),
+                          "type": str(r.get("type") or "").upper(),
+                          "content": r.get("content")})
+        if not items:
+            self._show(chat, mid, "📭 رکوردی در منتخب‌ها نیست.",
+                       [[btn("🔙 بازگشت", "srvsub"), btn("🏠 خانه", "menu")]])
+            return
+        self._srv_sub_store(chat, "⭐ منتخب‌ها", items)
+        self._srv_sub_render(chat, mid)
+
+    def _srv_sub_pick(self, chat: int, mid: int, acc: str, zid: str) -> None:
+        try:
+            recs = self._cf_client(int(acc)).records(zid) or []
+        except (IndexError, CfError, ValueError) as e:
+            self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}",
+                       [[btn("🔙 بازگشت", "srvsubzone")]])
+            return
+        zname = ""
+        for z in self._cf_all_zones():
+            if z.get("id") == zid:
+                zname = z.get("name")
+                break
+        items = []
+        for x in recs:
+            t = str(x.get("type") or "").upper()
+            if t not in ("A", "AAAA", "CNAME"):
+                continue
+            items.append({"label": str(x.get("name") or "?"),
+                          "name": x.get("name"), "type": t,
+                          "content": x.get("content")})
+        if not items:
+            self._show(chat, mid, "📭 رکورد A/AAAA/CNAME در این دامنه نیست.",
+                       [[btn("🔙 بازگشت", "srvsubzone")]])
+            return
+        self._srv_sub_store(chat, f"📁 {zname}", items)
+        self._srv_sub_render(chat, mid)
+
+    def _srv_sub_store(self, chat: int, title: str, items: list) -> None:
+        self.store.put_json(f"srvsub:{chat}",
+                            {"title": title, "items": items, "ids": [],
+                             "page": 0}, 3600)
+
+    def _srv_sub_render(self, chat: int, mid: int) -> None:
+        st = self.store.get_json(f"srvsub:{chat}")
+        if not st or not st.get("items"):
+            self.store.delete(f"srvsub:{chat}")
+            self._show(chat, mid, "⏳ نشست منقضی شده.",
+                       [[btn("🖥 سرورها و مانیتورینگ", "srv")]])
+            return
+        items = st["items"]
+        chosen = set(st.get("ids") or [])
+        per = 8
+        pages = max(1, (len(items) + per - 1) // per)
+        page = st.get("page", 0)
+        page = max(0, min(page, pages - 1))
+        st["page"] = page
+        self.store.put_json(f"srvsub:{chat}", st, 3600)
+        sl = items[page * per:page * per + per]
+        base = page * per
+        kb = []
+        for i in range(0, len(sl), 2):
+            row = []
+            for j in (i, i + 1):
+                if j < len(sl):
+                    idx = base + j
+                    row.append(btn(f'{"✅" if idx in chosen else "⬜"} '
+                                   f'{sl[j]["label"]}', f"srvsubsel:{idx}"))
+                else:
+                    row.append(EMPTY_BTN)
+            kb.append(row)
+        nav = []
+        nav.append(btn("◀️", f"srvsubpg:{page - 1}") if page > 0 else EMPTY_BTN)
+        nav.append(btn(f"📄 {page + 1}/{pages}", "noop"))
+        nav.append(btn("▶️", f"srvsubpg:{page + 1}")
+                   if page < pages - 1 else EMPTY_BTN)
+        kb.append(nav)
+        kb.append([btn(f"✅ افزودن ({len(chosen)})", "srvsubsave"),
+                   btn("❌ انصراف", "srvsubcancel")])
+        self._show(chat, mid,
+                   f'➕ افزودن سرور از ساب‌دامنه — {esc(st.get("title"))}\n\n'
+                   "ساب‌ها را انتخاب کنید (⬜ → ✅):", kb)
+
+    def _srv_sub_toggle(self, chat: int, mid: int, idx: str) -> None:
+        st = self.store.get_json(f"srvsub:{chat}")
+        if not st or not st.get("items"):
+            self._srv_sub_render(chat, mid)
+            return
+        try:
+            i = int(idx)
+            st["items"][i]
+        except (ValueError, IndexError):
+            self._srv_sub_render(chat, mid)
+            return
+        ids = set(st.get("ids") or [])
+        ids.discard(i) if i in ids else ids.add(i)
+        st["ids"] = sorted(ids)
+        self.store.put_json(f"srvsub:{chat}", st, 3600)
+        self._srv_sub_render(chat, mid)
+
+    def _srv_sub_page(self, chat: int, mid: int, page: str) -> None:
+        st = self.store.get_json(f"srvsub:{chat}")
+        if st:
+            try:
+                st["page"] = int(page)
+            except ValueError:
+                pass
+            self.store.put_json(f"srvsub:{chat}", st, 3600)
+        self._srv_sub_render(chat, mid)
+
+    def _srv_sub_save(self, chat: int, mid: int) -> None:
+        st = self.store.get_json(f"srvsub:{chat}")
+        if not st or not st.get("ids"):
+            self._show(chat, mid, "⚠️ هیچ سابی انتخاب نشده.",
+                       [[btn("🔙 بازگشت", "srvsub")]])
+            return
+        cands, skipped = self._srv_sub_candidates(st)
+        if not cands:
+            self._show(chat, mid,
+                       "❌ هیچ آی‌پی قابل‌استفاده‌ای پیدا نشد.",
+                       [[btn("🔙 بازگشت", "srvsubcancel")]])
+            return
+        self.store.put_json(f'srvsubsel:{chat}',
+                            {"cands": cands, "skipped": skipped}, 3600)
+        pws = self._srv_pw_list()
+        kb = []
+        for i in range(0, len(pws), 3):
+            kb.append([btn(f"🔒 رمز {j + 1}", f"srvsubpw:{j}")
+                       for j in range(i, min(i + 3, len(pws)))])
+        kb.append([btn("🔓 بدون رمز", "srvsubpw:none"),
+                   btn("❌ انصراف", "srvsubcancel")])
+        self._show(chat, mid,
+                   f"🔐 رمز SSH برای {len(cands)} سرور جدید؟\n\n"
+                   "یک رمز ذخیره‌شده انتخاب کن یا رمز را بفرست "
+                   "(«-» یعنی بدون رمز):", kb)
+        self.store.put_json(f"pend:{chat}",
+                            {"type": "srv_sub_pw"}, 900)
+
+    def _srv_sub_candidates(self, st: dict) -> tuple:
+        import socket
+        items = st.get("items") or []
+        ids = st.get("ids") or []
+        out = []
+        skipped = 0
+        for i in ids:
+            try:
+                it = items[i]
+            except IndexError:
+                skipped += 1
+                continue
+            name = str(it.get("name") or "").strip()
+            t = str(it.get("type") or "").upper()
+            content = str(it.get("content") or "").strip()
+            ip = ""
+            if t in ("A", "AAAA") and content:
+                ip = content
+            elif name:
+                try:
+                    ip = socket.getaddrinfo(name, None,
+                                            socket.AF_INET)[0][4][0]
+                except OSError:
+                    ip = ""
+            if not ip:
+                skipped += 1
+                continue
+            out.append({"name": name, "host": ip, "port": 22})
+        return out, skipped
+
+    def _srv_sub_finish(self, chat: int, mid: int, sel: str,
+                        stored: bool = False, pw_override=None) -> None:
+        st = self.store.get_json(f"srvsubsel:{chat}")
+        if not st:
+            self._show(chat, mid, "⏳ نشست منقضی شده.",
+                       [[btn("🔙 بازگشت", "srv")]])
+            return
+        if pw_override is not None:
+            pw = pw_override
+        elif stored and sel != "none":
+            pws = self._srv_pw_list()
+            try:
+                pw = pws[int(sel)]
+            except (ValueError, IndexError):
+                pw = ""
+        else:
+            pw = ""
+        cands = st.get("cands") or []
+        skipped = st.get("skipped", 0)
+        lst = self._srv_list()
+        have = {str(s.get("name") or "").lower() for s in lst}
+        import time as _t
+        import random as _r
+        added = dup = 0
+        for c in cands:
+            key = str(c["name"]).lower()
+            if key in have:
+                dup += 1
+                continue
+            have.add(key)
+            lst.append({"id": f's{int(_t.time())}{_r.randint(100, 999)}{added}',
+                        "name": str(c["name"])[:60], "host": c["host"],
+                        "port": c.get("port", 22), "user": "root",
+                        "note": f'افزوده از ساب‌دامنه {c["name"]}',
+                        "auth": "pass" if pw else "none", "secret": pw or ""})
+            added += 1
+        self.store.put_json("srv_list", lst)
+        self.store.delete(f"srvsubsel:{chat}")
+        self.store.delete(f"srvsub:{chat}")
+        self.store.delete(f"pend:{chat}")
+        self.bot.send(chat,
+                      f"✅ {added} سرور افزوده شد.\n"
+                      f"🔁 تکراری: {dup} — ⏭ رد‌شده: {skipped}")
+        self._srv_home(chat, 0)
 
     def _srvmon_run(self, chat: int) -> None:
         from monitors import run_srvmon
