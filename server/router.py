@@ -882,6 +882,78 @@ class Router:
         elif data.startswith("lbsdel:"):
             _, gid, idx = data.split(":")
             self._lb_spare_del(chat, mid, gid, int(idx))
+        elif data == "selmode":
+            sess = self._cf_sess(chat)
+            if not sess.get("zid"):
+                self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            else:
+                sess["sel"] = []
+                self._cf_save_sess(chat, sess)
+                self._cf_records(chat, mid, sess.get("acc", 0),
+                                 sess["zid"], 0)
+        elif data.startswith("sel:"):
+            rid = data[4:]
+            sess = self._cf_sess(chat)
+            if not sess.get("zid"):
+                self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            else:
+                sel = set(sess.get("sel") or [])
+                if rid in sel:
+                    sel.discard(rid)
+                else:
+                    sel.add(rid)
+                sess["sel"] = sorted(sel)
+                self._cf_save_sess(chat, sess)
+                self._cf_records(chat, mid, sess.get("acc", 0),
+                                 sess["zid"], sess.get("pg", 0))
+        elif data.startswith("selp:"):
+            pg = int(data.split(":")[1])
+            sess = self._cf_sess(chat)
+            if not sess.get("zid"):
+                self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            else:
+                sess["pg"] = pg
+                self._cf_save_sess(chat, sess)
+                self._cf_records(chat, mid, sess.get("acc", 0),
+                                 sess["zid"], pg)
+        elif data == "seldone":
+            sess = self._cf_sess(chat)
+            sess.pop("sel", None)
+            self._cf_save_sess(chat, sess)
+            if sess.get("zid"):
+                self._cf_records(chat, mid, sess.get("acc", 0),
+                                 sess["zid"], sess.get("pg", 0))
+            else:
+                self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+        elif data == "bulkdel":
+            sess = self._cf_sess(chat)
+            n = len(sess.get("sel") or [])
+            if not n:
+                self._show(chat, mid, "⚠️ چیزی انتخاب نشده.", home_kb())
+            else:
+                self._show(chat, mid, f"⚠️ {n} رکورد حذف شود؟",
+                           [[btn("✅ بله، حذف کن", "bulkdelok"),
+                             btn("❌ انصراف", "seldone")]])
+        elif data == "bulkdelok":
+            self._bulk_del_do(chat, mid)
+        elif data == "bulkedit":
+            sess = self._cf_sess(chat)
+            if not (sess.get("sel") or []):
+                self._show(chat, mid, "⚠️ چیزی انتخاب نشده.", home_kb())
+            else:
+                self.store.put_json(f"pend:{chat}", {"type": "bulkedit"}, 600)
+                self._show(chat, mid, "✏️ مقدار جدید همه را بفرستید:",
+                           [[btn("⬅️ انصراف", "seldone")]])
+        elif data == "bulktype":
+            kb = grid3([btn(t, f"bulktypev:{t}")
+                        for t in ("A", "AAAA", "CNAME")])
+            kb.append([btn("❌ انصراف", "seldone")])
+            self._show(chat, mid, "🔄 نوع جدید همه را انتخاب کنید:", kb)
+        elif data.startswith("bulktypev:"):
+            self._bulk_type_do(chat, mid, data.split(":")[1])
+        elif data == "favsel":
+            sess = self._cf_sess(chat)
+            self._fav_add_many(chat, mid, sess)
         elif data.startswith("ct:"):
             rid = data[3:]
             acc, zid = self._cf_ctx(chat, rid)
@@ -1059,7 +1131,10 @@ class Router:
         except (IndexError, CfError) as e:
             self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}", home_kb())
             return
-        self._cf_save_sess(chat, {"acc": acc, "zid": zid})
+        sess = self._cf_sess(chat)
+        sess.update(acc=acc, zid=zid)
+        self._cf_save_sess(chat, sess)
+        sel = sess.get("sel")
         if not recs:
             self._show(chat, mid, f"📭 رکوردی برای {zname} یافت نشد.",
                        [[btn("➕ افزودن", f"cfadd:{acc}:{zid}")],
@@ -1069,11 +1144,34 @@ class Router:
             return
         pages = max(1, (len(recs) + PAGE - 1) // PAGE)
         pg = max(0, min(pg, pages - 1))
+        sess["pg"] = pg
+        self._cf_save_sess(chat, sess)
         labels = self._dup_labels(recs, zname)
         rows = []
         for r in recs[pg * PAGE:(pg + 1) * PAGE]:
-            rows.append(btn(labels[r.get("id")], f'cfr:{r.get("id")}'))
+            if sel is None:
+                rows.append(btn(labels[r.get("id")], f'cfr:{r.get("id")}'))
+            else:
+                mark = "✅" if r.get("id") in sel else "⬜"
+                rows.append(btn(f"{mark} {labels[r.get('id')]}",
+                                f'sel:{r.get("id")}'))
         kb = grid3(rows)
+        if sel is not None:
+            if sel:
+                kb.append([btn("🗑 حذف انتخاب‌ها", "bulkdel"),
+                           btn("✏️ تغییر مقدار", "bulkedit")])
+                kb.append([btn("🔄 تغییر نوع", "bulktype")])
+                kb.append([btn("⭐ افزودن به منتخب‌ها", "favsel")])
+            else:
+                kb.append([btn("❌ لغو انتخاب", "seldone")])
+            nav = [btn("◀️", f"selp:{pg - 1}") if pg > 0 else EMPTY_BTN,
+                   btn(f"📄 {pg + 1}/{pages}", "noop"),
+                   btn("▶️", f"selp:{pg + 1}") if pg < pages - 1
+                   else EMPTY_BTN]
+            kb.append(nav)
+            title = f"🗂 {zname} — {len(sel)} انتخاب شده"
+            self._show(chat, mid, title, kb)
+            return
         kb.append([btn("⚙️ تنظیمات", "zset"),
                    btn("🗂 گروهی", "selmode"),
                    btn("➕ افزودن", f"cfadd:{acc}:{zid}"),
@@ -1096,6 +1194,96 @@ class Router:
         if pages > 1:
             title += f" — صفحه {pg + 1} از {pages}"
         self._show(chat, mid, title, kb)
+
+    def _bulk_del_do(self, chat: int, mid: int) -> None:
+        sess = self._cf_sess(chat)
+        sel = sess.get("sel") or []
+        if not sel or not sess.get("zid"):
+            self._show(chat, mid, "⚠️ چیزی انتخاب نشده.", home_kb())
+            return
+        try:
+            client = self._cf_client(sess.get("acc", 0))
+            ok, fail = 0, 0
+            for rid in sel:
+                try:
+                    client.del_record(sess["zid"], rid)
+                    ok += 1
+                except CfError:
+                    fail += 1
+        except IndexError as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        sess.pop("sel", None)
+        self._cf_save_sess(chat, sess)
+        self.bot.send(chat, f"✅ {ok} حذف شد." + (f" ⚠️ {fail} ناموفق." if fail else ""))
+        self._cf_records(chat, 0, sess.get("acc", 0), sess["zid"],
+                         sess.get("pg", 0))
+
+    def _bulk_type_do(self, chat: int, mid: int, rtype: str) -> None:
+        sess = self._cf_sess(chat)
+        sel = sess.get("sel") or []
+        if not sel or not sess.get("zid"):
+            self._show(chat, mid, "⚠️ چیزی انتخاب نشده.", home_kb())
+            return
+        try:
+            client = self._cf_client(sess.get("acc", 0))
+            recs = client.records(sess["zid"]) or []
+        except (IndexError, CfError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        ok, skip = 0, 0
+        for rid in sel:
+            r = next((x for x in recs if x.get("id") == rid), None)
+            if not r:
+                skip += 1
+                continue
+            if _value_hint(str(r.get("content") or ""), rtype) is not None:
+                skip += 1
+                continue
+            try:
+                client.update_record(sess["zid"], r, type=rtype)
+                ok += 1
+            except CfError:
+                skip += 1
+        sess.pop("sel", None)
+        self._cf_save_sess(chat, sess)
+        self.bot.send(chat, f"✅ نوع {ok} رکورد عوض شد." + (f" ⚠️ {skip} رد شد." if skip else ""))
+        self._cf_records(chat, 0, sess.get("acc", 0), sess["zid"],
+                         sess.get("pg", 0))
+
+    def _fav_add_many(self, chat: int, mid: int, sess: dict) -> None:
+        sel = sess.get("sel") or []
+        if not sel or not sess.get("zid"):
+            self._show(chat, mid, "⚠️ چیزی انتخاب نشده.", home_kb())
+            return
+        try:
+            client = self._cf_client(sess.get("acc", 0))
+            zname = next((z["name"] for z in client.zones()
+                          if z["id"] == sess["zid"]), sess["zid"])
+            recs = client.records(sess["zid"]) or []
+        except (IndexError, CfError) as e:
+            self._show(chat, mid, f"❌ {esc(e)}", home_kb())
+            return
+        favs = self._favs()
+        have = {f.get("rid") for f in favs}
+        n = 0
+        for rid in sel:
+            if rid in have:
+                continue
+            r = next((x for x in recs if x.get("id") == rid), None)
+            if not r:
+                continue
+            favs.append({"acc": sess.get("acc", 0), "zid": sess["zid"],
+                         "rid": rid,
+                         "name": self._rec_label(str(r.get("name") or ""),
+                                                 r.get("type"), zname)})
+            n += 1
+        self.store.put_json("favs", favs)
+        sess.pop("sel", None)
+        self._cf_save_sess(chat, sess)
+        self.bot.send(chat, f"✅ {n} مورد به منتخب اضافه شد.")
+        self._cf_records(chat, 0, sess.get("acc", 0), sess["zid"],
+                         sess.get("pg", 0))
 
     def _cf_record(self, chat: int, mid: int, acc: int, zid: str,
                    rid: str) -> None:
@@ -1468,6 +1656,41 @@ class Router:
             pr = int(text.strip()) if text.strip().isdigit() else 10
             self._ar_create(chat, dict(pend, priority=pr),
                             pend.get("content", ""), pr)
+        elif pend.get("type") == "bulkedit":
+            sess = self._cf_sess(chat)
+            sel = sess.get("sel") or []
+            if not sel or not sess.get("zid"):
+                self.store.delete(f"pend:{chat}")
+                self.bot.send(chat, "⚠️ چیزی انتخاب نشده.")
+                return
+            try:
+                client = self._cf_client(sess.get("acc", 0))
+                recs = client.records(sess["zid"]) or []
+            except (IndexError, CfError) as e:
+                self.bot.send(chat, f"❌ {esc(e)}")
+                return
+            ok, skip = 0, 0
+            for rid in sel:
+                r = next((x for x in recs if x.get("id") == rid), None)
+                if not r:
+                    skip += 1
+                    continue
+                if _value_hint(text.strip(),
+                               str(r.get("type") or "").upper()) is not None:
+                    skip += 1
+                    continue
+                try:
+                    client.update_record(sess["zid"], r,
+                                         content=text.strip())
+                    ok += 1
+                except CfError:
+                    skip += 1
+            self.store.delete(f"pend:{chat}")
+            sess.pop("sel", None)
+            self._cf_save_sess(chat, sess)
+            self.bot.send(chat, f"✅ {ok} رکورد عوض شد." + (f" ⚠️ {skip} رد شد." if skip else ""))
+            self._cf_records(chat, 0, sess.get("acc", 0), sess["zid"],
+                             sess.get("pg", 0))
         elif pend.get("type") == "cfedit":
             r = self._cf_find(pend.get("acc", 0), pend["zid"], pend["rid"])
             if not r:
