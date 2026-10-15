@@ -121,6 +121,10 @@ class Pg:
             return None
         return d if isinstance(d, dict) else None
 
+    def hosts(self, token: str) -> list:
+        d = _get(f"{self.base}/api/hosts", token, timeout=25)
+        return d if isinstance(d, list) else []
+
     def user(self, token: str, username: str) -> dict | None:
         try:
             d = _get(f"{self.base}/api/user/{urllib.parse.quote(username)}",

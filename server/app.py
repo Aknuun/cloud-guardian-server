@@ -184,6 +184,18 @@ def main() -> None:
                                   _pgc)
                 except Exception as e:
                     print(f"node: {e}", flush=True)
+            if now - _meta.get("hf", 0) > 60:
+                _meta["hf"] = now
+                try:
+                    import threading as _th2
+                    from hostfilter import run as _hfrun
+                    _th2.Thread(target=_hfrun,
+                                args=(bot, store, router._pg_panels(),
+                                      int(cfg["admin_id"]),
+                                      router._cf_accs(), _pgc),
+                                daemon=True).start()
+                except Exception as e:
+                    print(f"hf: {e}", flush=True)
             if now - last_digest_u > 3600:
                 _al.run_digest(bot, store, panels, "usage",
                                int(cfg["admin_id"]),

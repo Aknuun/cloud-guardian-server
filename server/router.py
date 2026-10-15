@@ -315,11 +315,43 @@ class Router:
                 self.store.put_json(f"pend:{chat}", {"type": "zsearch"}, 600)
                 self._show(chat, mid, "🔍 بخشی از نام یا مقدار رکورد را بفرستید:",
                            [[btn("❌ انصراف", "zones")]])
-        elif data in ("noop", "hf",
-                      "srv", "dommon", "fmail", "lb", "settings",
+        elif data in ("noop",
+                      "srv", "dommon", "fmail", "lb",
                       "zset", "selmode", "zmail", "ztraf", "cref", "rtraf"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
+        elif data == "hf":
+            self._hf_home(chat, mid)
+        elif data == "hftg":
+            from hostfilter import get_cfg, save_cfg
+            cfg = get_cfg(self.store)
+            cfg["enabled"] = not cfg.get("enabled", True)
+            save_cfg(self.store, cfg)
+            self._hf_home(chat, mid)
+        elif data == "hfforceall":
+            self._show(chat, mid,
+                       "🔄 بررسی کامل شروع شد؛ نتیجه همین‌جا اعلام می‌شود.",
+                       home_kb())
+            self._hf_run_bg(chat, False, "")
+        elif data == "hflist":
+            self._hf_hosts(chat, mid)
+        elif data.startswith("hfexc:"):
+            from hostfilter import get_cfg, save_cfg
+            cfg = get_cfg(self.store)
+            ex = cfg.get("exceptions") or []
+            dv = data[6:]
+            cfg["exceptions"] = [x for x in ex if x != dv] \
+                if dv in ex else ex + [dv]
+            save_cfg(self.store, cfg)
+            self._hf_hosts(chat, mid)
+        elif data == "hfsetch":
+            self._hf_settings(chat, mid)
+        elif data.startswith("hfnum:"):
+            self.store.put_json(f"pend:{chat}",
+                                {"type": "hf_num",
+                                 "key": data[6:]}, 600)
+            self._show(chat, mid, "🔢 عدد جدید را بفرستید:",
+                       [[btn("🔙 انصراف", "hfsetch")]])
         elif data == "settings":
             self._settings_home(chat, mid)
         elif data == "help":
@@ -1249,6 +1281,20 @@ class Router:
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, "✅ ذخیره شد.")
             self._um_home(chat, 0)
+        elif pend.get("type") == "hf_num":
+            from hostfilter import get_cfg, save_cfg
+            try:
+                v = int(text.strip())
+                assert v >= 0
+            except (ValueError, AssertionError):
+                self.bot.send(chat, "❌ عدد نامعتبر است.")
+                return
+            cfg = get_cfg(self.store)
+            cfg[pend.get("key", "intervalMin")] = v
+            save_cfg(self.store, cfg)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ ذخیره شد.")
+            self._hf_settings(chat, 0)
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
@@ -1858,6 +1904,104 @@ class Router:
             self._show(chat, mid, f"❌ نشد: {esc(e)}", home_kb())
             return
         self._arvan_rec(chat, 0, acc, dom, rid)
+
+    # ---------- Auto sub-change (host filter) ----------
+
+    def _hf_home(self, chat: int, mid: int = 0) -> None:
+        from hostfilter import get_cfg
+        cfg = get_cfg(self.store)
+        lines = ["🧭 تعویض خودکار هاست فیلتر", "",
+                 "💡 برای بررسی سریع‌تر: هاست‌هایی که نیاز به تعویض ندارند را از «📋 لیست هاست‌ها» با «🚫 استثنا» از چرخه خارج کن؛ هرچه هاست کمتر، ران زودتر تمام می‌شود.",
+                 "وضعیت: " + ("▶️ فعال" if cfg.get("enabled") else "⏸ غیرفعال"),
+                 "🔌 سرویس بررسی: check-host",
+                 "⏱ فاصلهٔ اجرا: هر " + str(cfg.get("intervalMin")) + " دقیقه",
+                 "🌆 شهرها: " + "، ".join(cfg.get("citiesSel") or []),
+                 "🎯 آستانه: " + str(cfg.get("cities")) + " شهر از " + str(len(cfg.get("citiesSel") or [])) + " (پینگ موفق ≤ " + str(cfg.get("maxOk")) + " از ۴)",
+                 "📦 تعداد هر اجرا: " + str(cfg.get("batch")) + " · 🔁 حداکثر تعویض: " + str(cfg.get("maxChanges")),
+                 "🔁 بررسی مجدد: " + (str(cfg.get("recheckCount")) + " بار، هر " + str(cfg.get("recheckMin")) + " دقیقه" if cfg.get("recheckCount") else "غیرفعال (تعویض فوری)"),
+                 "روش: دامنه‌های هاست‌ها هر " + str(cfg.get("intervalMin")) + " دقیقه از داخل ایران بررسی می‌شوند؛ در صورت فیلتر یک دامنهٔ شماره‌دار جدید ساخته و در همان هاست جایگزین می‌شود."]
+        if cfg.get("last_summary"):
+            lines.append("")
+            lines.append("آخرین ران: " + str(cfg["last_summary"]))
+        kb = [[btn("⏸ غیرفعال‌سازی" if cfg.get("enabled") else "▶️ فعال‌سازی", "hftg")],
+              [btn("⚡ فورس بررسی کامل", "hfforceall")],
+              [btn("📋 لیست هاست‌ها", "hflist")],
+              [btn("⚙️ تنظیمات چک‌هاست", "hfsetch")],
+              [btn("🏠 خانه", "menu")]]
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _hf_hosts(self, chat: int, mid: int = 0) -> None:
+        from hostfilter import get_cfg
+        from pg import Pg as _Pg
+        cfg = get_cfg(self.store)
+        panels = self._pg_panels()
+        kb = []
+        lines = ["📋 لیست هاست‌ها", ""]
+        for pi, p in enumerate(panels):
+            try:
+                pgc = _Pg(p["url"], p["username"], p["password"])
+                hosts = pgc.hosts(pgc.login())
+            except Exception as e:
+                lines.append(f'• {p.get("name")}: خطا ({str(e)[:60]})')
+                continue
+            lines.append(f'🖥 {p.get("name")} ({len(hosts)} هاست):')
+            for h in hosts[:30]:
+                doms = []
+                for field in ("address", "sni", "host"):
+                    v = (h.get("host") or {}).get(field)
+                    vals = v if isinstance(v, list) else ([v] if v else [])
+                    doms.extend(str(x) for x in vals if x)
+                for dv in sorted(set(doms))[:6]:
+                    mark = "🚫 " if dv in (cfg.get("exceptions") or []) else ""
+                    kb.append([btn(f"{mark}{dv[:28]}", f"hfexc:{dv}")])
+        kb.append([btn("🔙 بازگشت", "hf"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _hf_settings(self, chat: int, mid: int = 0) -> None:
+        from hostfilter import get_cfg
+        cfg = get_cfg(self.store)
+        lines = ["⚙️ تنظیمات چک‌هاست", "",
+                 "⚠️ هرچه فاصلهٔ اجرا کوتاه‌تر یا تعداد هر اجرا بیشتر باشد، درخواست‌های بیشتری به کلادفلر فرستاده می‌شود و ممکن است باعث محدود شدن شود.", "",
+                 "• ⏱ فاصلهٔ اجرا: " + str(cfg.get("intervalMin")) + " دقیقه",
+                 "• 🌆 شهرهای بررسی‌شده: " + "، ".join(cfg.get("citiesSel") or []),
+                 "• 🎯 حداقل شهرهای فیلتر: " + str(cfg.get("cities")),
+                 "• 📶 حداکثر پینگ موفق مجاز: " + str(cfg.get("maxOk")) + " از ۴",
+                 "• 🔁 تعداد بررسی مجدد: " + str(cfg.get("recheckCount")),
+                 "• ⏱ فاصلهٔ بررسی مجدد: هر " + str(cfg.get("recheckMin")) + " دقیقه",
+                 "• 📦 تعداد بررسی در هر اجرا: " + str(cfg.get("batch")),
+                 "• 🔁 حداکثر تعویض در هر اجرا: " + str(cfg.get("maxChanges"))]
+        kb = [[btn("⏱ فاصلهٔ اجرا", "hfnum:intervalMin")],
+              [btn("🎯 حداقل شهر", "hfnum:cities"),
+               btn("📶 حداکثر پینگ موفق", "hfnum:maxOk")],
+              [btn("📦 تعداد هر اجرا", "hfnum:batch"),
+               btn("🔁 حداکثر تعویض", "hfnum:maxChanges")],
+              [btn("♻️ تعداد بررسی مجدد", "hfnum:recheckCount"),
+               btn("⏱ فاصلهٔ بررسی مجدد", "hfnum:recheckMin")],
+              [btn("🔙 بازگشت", "hf"),
+               btn("🏠 خانه", "menu")]]
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _hf_run_bg(self, chat: int, force: bool, only: str) -> None:
+        import threading as _th
+        from hostfilter import run as _run
+        from pg import Pg as _Pg
+        bot, store = self.bot, self.store
+        panels = self._pg_panels()
+        accs = self._cf_accs()
+        admin = self.admin_id
+        def _go():
+            try:
+                r = _run(bot, store, panels, admin, accs,
+                         lambda p: _Pg(p["url"], p["username"], p["password"]),
+                         force=force, only=only)
+                try:
+                    bot.send(chat, f'✅ ران تمام شد: بررسی {r.get("checked", 0)} دامنه — {r.get("changed", 0)} تعویض.')
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        _th.Thread(target=_go, daemon=True).start()
 
     # ---------- Linode ----------
 
