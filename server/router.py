@@ -64,6 +64,13 @@ def esc(s) -> str:
     return html.escape(str(s or ""), quote=False)
 
 
+_FA = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def fa_d(n) -> str:
+    return str(n).translate(_FA)
+
+
 def btn(text: str, data: str, style: str = "") -> dict:
     b = {"text": text, "callback_data": data}
     if style:
@@ -436,6 +443,22 @@ class Router:
             self._cf_quota(chat, mid)
         elif data == "srvimport":
             self._srv_import(chat, mid)
+        elif data == "traf":
+            self._traf_zones(chat, mid, "all", 0)
+        elif data.startswith("trazf:"):
+            p = data.split(":")
+            self._traf_zones(chat, mid, p[1], int(p[2]) if len(p) > 2
+                             and p[2].lstrip("-").isdigit() else 0)
+        elif data.startswith("traz:"):
+            p = data.split(":")
+            self._traf_zone(chat, mid, int(p[1]), p[2],
+                            int(p[3]) if len(p) > 3 else 0)
+        elif data.startswith("trazdel:"):
+            p = data.split(":")
+            self._traf_zero_confirm(chat, mid, int(p[1]), p[2])
+        elif data.startswith("trazdely:"):
+            p = data.split(":")
+            self._traf_zero_do(chat, mid, int(p[1]), p[2])
         elif data == "srvaddbulk":
             self.store.put_json(f"pend:{chat}", {"type": "srv_bulk"}, 900)
             self._show(chat, mid,
@@ -3048,6 +3071,180 @@ class Router:
               [btn("🔙 بازگشت", f'srvopen:{s.get("id")}'),
                btn("🏠 خانه", "menu")]]
         self._show(chat, mid, txt, kb)
+
+    # ---------- Traffic (subs DNS queries) ----------
+
+    TRAF_PAGE = 20
+
+    @staticmethod
+    def _traf_range_label(d: int) -> str:
+        return ("۱ روز گذشته" if d == 1 else
+                "۱ ماه گذشته" if d == 30 else "۷ روز گذشته")
+
+    def _traf_zones(self, chat: int, mid: int = 0, flt: str = "all",
+                    pg: int = 0) -> None:
+        accs = self._cf_accs()
+        allz = self._cf_all_zones()
+        if not allz:
+            self._show(chat, mid, "📊 ترافیک ساب‌ها\n\n📭 دامنه‌ای پیدا نشد.",
+                       [[btn("🔙 بازگشت", "dommon"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        zones = allz if flt == "all" else \
+            [z for z in allz if z["_acc"] == int(flt)]
+        pages = max(1, (len(zones) + self.TRAF_PAGE - 1) // self.TRAF_PAGE)
+        pg = max(0, min(pg, pages - 1))
+        rows = [btn(f'📊 {z["name"]}', f'traz:{z["_acc"]}:{z["id"]}:0',
+                    "plain")
+                for z in zones[pg * self.TRAF_PAGE:(pg + 1) * self.TRAF_PAGE]]
+        kb = grid2(rows)
+        kb.append([btn("📁 ✅ همه اکانت‌ها" if flt == "all"
+                       else "📁 همه اکانت‌ها", "trazf:all:0")])
+        if len(accs) > 1:
+            kb.extend(grid3([
+                btn(f'{"👤 ✅ " if flt == str(j) else "👤 "}{a["name"]}',
+                    f"trazf:{j}:0") for j, a in enumerate(accs)]))
+        if pages > 1:
+            nav = []
+            nav.append(btn("⬅️", f"trazf:{flt}:{pg - 1}") if pg > 0
+                       else EMPTY_BTN)
+            nav.append(btn("🔙 بازگشت", "dommon"))
+            nav.append(btn("➡️", f"trazf:{flt}:{pg + 1}")
+                       if pg < pages - 1 else EMPTY_BTN)
+            kb.append(nav)
+        else:
+            kb.append([btn("🔙 بازگشت", "dommon"), btn("🏠 خانه", "menu")])
+        label = "همه" if flt == "all" else \
+            (accs[int(flt)]["name"] if flt.isdigit()
+             and int(flt) < len(accs) else "؟")
+        title = f"📊 ترافیک ساب‌ها — {label}"
+        if pages > 1:
+            title += f" — صفحه {pg + 1} از {pages}"
+        title += "\n\nترافیک ۷ روزهٔ DNS را ببینید — روی دامنه کلیک کنید."
+        self._show(chat, mid, title, kb)
+
+    def _traf_zone(self, chat: int, mid: int, acc: int, zid: str,
+                   pg: int = 0) -> None:
+        from cfusage import fetch_traffic_counts
+        accs = self._cf_accs()
+        if acc < 0 or acc >= len(accs):
+            self._show(chat, mid, "❌ اکانت پیدا نشد.",
+                       [[btn("🔙 بازگشت", "traf"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        token = accs[acc]["token"]
+        try:
+            zones = Cf(token).zones() or []
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}",
+                       [[btn("🔙 بازگشت", "traf")]])
+            return
+        zone = next((z for z in zones if z.get("id") == zid), None)
+        if not zone:
+            self._show(chat, mid, "❌ دامنه پیدا نشد.",
+                       [[btn("🔙 بازگشت", "traf"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        t = fetch_traffic_counts(token, zid)
+        if t.get("need_perm") or t.get("error"):
+            body = ("❌ دسترسی Analytics نیست.\n\n۱) به توکن این دسترسی را اضافه کن:\n"
+                    "<code>Zone → Analytics → Read</code>\n\n"
+                    "۲) چون توکن قابل ویرایش نیست، توکن جدید بساز و توی ربات جایگزین کن:\n"
+                    "کلودفلر ← 👤 اکانت‌ها ← حذف قدیمی + افزودن جدید"
+                    if t.get("need_perm") else
+                    f'❌ خطا در آمار:\n{esc(t.get("error"))}')
+            self._show(chat, mid, f'📊 ترافیک {esc(zone["name"])}\n\n{body}',
+                       [[btn("🔙 بازگشت", "traf"), btn("🏠 خانه", "menu")]])
+            return
+        counts = t.get("counts") or {}
+        try:
+            recs = Cf(token).records(zid) or []
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}",
+                       [[btn("🔙 بازگشت", "traf")]])
+            return
+        zname = str(zone["name"])
+        rows = [{"r": r, "n": counts.get(str(r.get("name") or "").lower(), 0)}
+                for r in recs
+                if str(r.get("type") or "").upper()
+                in ("A", "AAAA", "CNAME")]
+        rows.sort(key=lambda x: (-x["n"], str(x["r"].get("name") or "")))
+        pages = max(1, (len(rows) + self.TRAF_PAGE - 1) // self.TRAF_PAGE)
+        pg = max(0, min(pg, pages - 1))
+        active = sum(1 for x in rows if x["n"] > 0)
+        zeros = len(rows) - active
+        lines = [f'📊 ترافیک ۷ روز گذشته — {esc(zname)}',
+                 f'🧮 {len(rows)} ساب | 🟢 {active} فعال | ⚪ {zeros} صفر', ""]
+        for x in rows[pg * self.TRAF_PAGE:(pg + 1) * self.TRAF_PAGE]:
+            r = x["r"]
+            n = r.get("name") or ""
+            short = "@" if n == zname else (n[:-(len(zname) + 1)]
+                                            if n.endswith("." + zname) else n)
+            lines.append(f'{"🟢" if x["n"] > 0 else "⚪"} {esc(short)} '
+                         f'({esc(r.get("type"))}) — '
+                         f'{fa_d(format(x["n"], ","))} کوئری')
+        if pages > 1:
+            lines += ["", f"صفحه {pg + 1} از {pages}"]
+        lines += ["", "⚠️ ساب کم‌استفاده هم صفر نشون میده؛ قبل از حذف مطمئن شو."]
+        kb = []
+        if pg > 0 and pg < pages - 1:
+            kb.append([btn("⬅️ قبلی", f"traz:{acc}:{zid}:{pg - 1}"),
+                       btn("➡️ بعدی", f"traz:{acc}:{zid}:{pg + 1}")])
+        elif pg > 0:
+            kb.append([btn("⬅️ قبلی", f"traz:{acc}:{zid}:{pg - 1}")])
+        elif pg < pages - 1:
+            kb.append([btn("➡️ بعدی", f"traz:{acc}:{zid}:{pg + 1}")])
+        if zeros > 0:
+            kb.append([btn(f"🗑 حذف {zeros} ساب صفر",
+                           f"trazdel:{acc}:{zid}", "danger")])
+        kb.append([btn("🔙 بازگشت", "traf"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines)[:3500], kb)
+
+    def _traf_zero_confirm(self, chat: int, mid: int, acc: int,
+                           zid: str) -> None:
+        accs = self._cf_accs()
+        zname = zid
+        try:
+            for z in Cf(accs[acc]["token"]).zones() or []:
+                if z.get("id") == zid:
+                    zname = z.get("name")
+                    break
+        except (CfError, IndexError):
+            pass
+        self._show(chat, mid,
+                   f'🗑 همهٔ ساب‌های {esc(zname)} با ترافیک صفر حذف شوند؟\n\n'
+                   "⚠️ ساب کم‌استفاده هم صفر حساب می‌شود؛ مطمئنی؟",
+                   [[btn("✅ بله، حذف کن", f"trazdely:{acc}:{zid}",
+                         "danger"),
+                     btn("❌ انصراف", f"traz:{acc}:{zid}:0")]])
+
+    def _traf_zero_do(self, chat: int, mid: int, acc: int, zid: str) -> None:
+        from cfusage import fetch_traffic_counts
+        accs = self._cf_accs()
+        token = accs[acc]["token"]
+        t = fetch_traffic_counts(token, zid)
+        if t.get("need_perm") or t.get("error"):
+            self._show(chat, mid, "❌ خطا در آمار.",
+                       [[btn("🔙 بازگشت", "traf"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        counts = t.get("counts") or {}
+        client = Cf(token)
+        recs = client.records(zid) or []
+        zeros = [r for r in recs
+                 if str(r.get("type") or "").upper()
+                 in ("A", "AAAA", "CNAME")
+                 and not counts.get(str(r.get("name") or "").lower())]
+        ok = 0
+        for r in zeros:
+            try:
+                client.del_record(zid, r.get("id"))
+                ok += 1
+            except CfError:
+                continue
+        self._show(chat, mid,
+                   f"✅ {ok} از {len(zeros)} رکورد بدون ترافیک حذف شد.",
+                   [[btn("📊 ترافیک", "traf")]])
 
     def _sslm_home(self, chat: int, mid: int = 0) -> None:
         from sslmon import get_monitors, check_all, result_line
