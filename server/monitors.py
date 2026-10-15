@@ -475,3 +475,54 @@ def run_node_poll(bot, store, panels: list, admin_id: int, pg_client,
             st["ts"] = now_iso
             store.put_json(f'ndst:{m.get("id")}', st)
     return sent
+
+
+def run_domexp(bot, store, router, admin_id: int) -> int:
+    import datetime as _dt
+
+    import domexpiry as de
+    try:
+        router._domexp_check_all()
+    except Exception:
+        pass
+    try:
+        lst = router._domexp_list()
+    except Exception:
+        return 0
+    now = de._now_ms()
+    sent = 0
+    dirty = False
+    for it in lst:
+        exp = it.get("expiry")
+        if not isinstance(exp, (int, float)):
+            continue
+        days_left = (exp - now) // 86400000
+        if days_left < 0:
+            days_left = 0
+        if days_left not in de.DOMEXP_ALERT_DAYS:
+            continue
+        if it.get("last_alert_day") == days_left:
+            continue
+        it["last_alert_day"] = days_left
+        dirty = True
+        em = de.emoji(it, now)
+        jd = router.store  # noqa
+        try:
+            from jalali import fmt_jalali
+            jstr = fmt_jalali(exp).split(" - ")[0]
+        except Exception:
+            jstr = "?"
+        msg = (f'🗓 هشدار انقضای دامنه {em}\n\n'
+               f'🌐 <code>{it.get("domain")}</code>\n'
+               f'🗓 انقضا: {jstr}\n'
+               f'⏳ باقی\u200cمانده: {de.remaining(exp, now)}'
+               + ("\n\n⛔ امروز منقضی می\u200cشود!"
+                  if days_left == 0 else ""))
+        try:
+            bot.send(admin_id, msg)
+            sent += 1
+        except Exception:
+            pass
+    if dirty:
+        store.put_json("dom_expiry", lst)
+    return sent

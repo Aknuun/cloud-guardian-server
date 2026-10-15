@@ -9,6 +9,7 @@ Conventions (kept tiny on purpose):
 from __future__ import annotations
 
 import html
+import urllib.parse
 
 from cf import Cf, CfError
 from arvan import Arvan, ArvanError, norm_key
@@ -443,6 +444,48 @@ class Router:
             self._cf_quota(chat, mid)
         elif data == "srvimport":
             self._srv_import(chat, mid)
+        elif data == "domexp":
+            self._domexp_refresh(chat, mid)
+        elif data == "domexpp" or data.startswith("domexpp:"):
+            p = data.split(":")
+            self._domexp_home(chat, mid, int(p[1]) if len(p) > 1
+                              and p[1].lstrip("-").isdigit() else 0)
+        elif data == "domexpall":
+            self._domexp_add_all(chat, mid)
+        elif data == "domexpa":
+            self.store.put_json(f"pend:{chat}", {"type": "domexp_domain"}, 600)
+            self._show(chat, mid,
+                       "✍️ دامنه‌ای که می‌خواهید انقضایش نظارت شود را بفرستید (مثلاً example.ir یا example.com):\n\n"
+                       "ℹ️ دامنهٔ .ir از whois.nic.ir استعلام می‌شود؛ اگر ایرنیک تاریخ را مخفی کرده باشد و «🔑 کلید API» ثبت شده باشد، خودکار از WhoisXMLAPI گرفته می‌شود؛ وگرنه از «🗓 ثبت تاریخ دستی» وارد کن.",
+                       [[btn("🔙 انصراف", "domexpp:0")]])
+        elif data == "domexpcal":
+            self._domexp_cal_list(chat, mid)
+        elif data.startswith("domexpi:"):
+            self._domexp_cal_domain(chat, mid,
+                                    urllib.parse.unquote(data[8:]))
+        elif data == "domexpd":
+            self._domexp_del_list(chat, mid)
+        elif data.startswith("domexpdy:"):
+            self._domexp_del(chat, mid, data[9:])
+        elif data == "domexpkey":
+            self._domexp_key_page(chat, mid)
+        elif data == "domexpk":
+            self.store.put_json(f"pend:{chat}", {"type": "domexp_key"}, 900)
+            self._show(chat, mid,
+                       "🔑 کلید API را بفرستید:\n(برای حذف کلید، «-» بفرستید)",
+                       [[btn("🔙 انصراف", "domexpkey")]])
+        elif data == "domexpkdel":
+            self.store.put_json("dom_expiry_cfg",
+                                {"provider": "whoisxmlapi_domaininfo",
+                                 "key": ""})
+            self._show(chat, mid, "🗑 کلید API حذف شد.",
+                       [[btn("🔙 بازگشت", "domexpkey"),
+                         btn("🏠 خانه", "menu")]])
+        elif data == "domexptest":
+            self._domexp_test(chat, mid)
+        elif data.startswith("trazdely:"):
+            p = data.split(":")
+            self._traf_zero_do(chat, mid, int(p[1]), p[2])
         elif data == "traf":
             self._traf_zones(chat, mid, "all", 0)
         elif data.startswith("trazf:"):
@@ -456,9 +499,6 @@ class Router:
         elif data.startswith("trazdel:"):
             p = data.split(":")
             self._traf_zero_confirm(chat, mid, int(p[1]), p[2])
-        elif data.startswith("trazdely:"):
-            p = data.split(":")
-            self._traf_zero_do(chat, mid, int(p[1]), p[2])
         elif data == "srvaddbulk":
             self.store.put_json(f"pend:{chat}", {"type": "srv_bulk"}, 900)
             self._show(chat, mid,
@@ -2014,6 +2054,124 @@ class Router:
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, "✅ اضافه شد.")
             self._sslm_home(chat, 0)
+        elif pend.get("type") == "domexp_domain":
+            import re as _re
+            import time as _t
+            import domexpiry as de
+            domain = (text.strip().lower()
+                      .replace("https://", "").replace("http://", ""))
+            domain = domain.split("/")[0].strip()
+            if not _re.match(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$", domain):
+                self.bot.send(chat,
+                              "❌ نام دامنه معتبر نیست. دوباره بفرستید (مثلاً example.ir):")
+                return
+            lst = self._domexp_list()
+            if any(x.get("domain") == domain for x in lst):
+                self.bot.send(chat, "❌ این دامنه از قبل در مانیتور هست.",
+                              [[btn("🗓 مانیتور انقضای دامنه", "domexpp:0")]])
+                self.store.delete(f"pend:{chat}")
+                return
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "⏳ در حال استعلام انقضای دامنه…")
+            r = de.fetch_domain_expiry(domain, self._domexp_cfg()["key"])
+            if r.get("status") == "ok":
+                lst.append({"domain": domain, "status": "ok",
+                            "expiry": r.get("expiry"),
+                            "added": int(_t.time() * 1000)})
+                self.store.put_json("dom_expiry", lst)
+                self.bot.send(chat,
+                              f'✅ <code>{esc(domain)}</code> به مانیتور اضافه شد.\n'
+                              f'🗓 انقضا: {fmt_jalali(r["expiry"]).split(" - ")[0]}\n'
+                              f'⏳ باقی‌مانده: {de.remaining(r["expiry"])}',
+                              [[btn("🗓 مانیتور انقضای دامنه", "domexpp:0"),
+                                btn("🔙 بازگشت", "menu")]])
+            else:
+                st = r.get("status")
+                lst.append({"domain": domain, "status": st, "expiry": None,
+                            "added": int(_t.time() * 1000)})
+                self.store.put_json("dom_expiry", lst)
+                reason = ("ایرنیک تاریخ این دامنه را مخفی کرده. برای استعلام خودکار «🔑 ثبت کلید API» را بزن."
+                          if st == "hidden" else
+                          "دامنه در ایرنیک ثبت نیست." if st == "not_found"
+                          else "دامنه آزاد/ثبت‌نشده است." if st == "available"
+                          else "خطای API: " + str(r.get("message") or "کلید/اعتبار را بررسی کن.")
+                          if st == "api_error" else
+                          "استعلام ناموفق بود؛ بعداً با «🔄 استعلام دوبارهٔ همه» امتحان کن.")
+                self.bot.send(chat,
+                              f'➕ <code>{esc(domain)}</code> اضافه شد، اما تاریخ انقضا پیدا نشد.\n'
+                              f'ℹ️ {reason}\n\n'
+                              "از دکمهٔ «🗓 ثبت تاریخ دستی» می‌توانی تاریخ را خودت وارد کنی.",
+                              [[btn("🗓 ثبت تاریخ دستی", "domexpcal"),
+                                btn("🗓 مانیتور انقضای دامنه", "domexpp:0")]])
+        elif pend.get("type") == "domexp_key":
+            import domexpiry as de
+            key = text.strip()
+            self.store.delete(f"pend:{chat}")
+            if not key or key == "-":
+                self.store.put_json("dom_expiry_cfg",
+                                    {"provider": "whoisxmlapi_domaininfo",
+                                     "key": ""})
+                self.bot.send(chat, "🗑 کلید API حذف شد.",
+                              [[btn("🗓 مانیتور انقضای دامنه", "domexpp:0")]])
+                return
+            cfg = self._domexp_cfg()
+            cfg["key"] = key
+            self.store.put_json("dom_expiry_cfg", cfg)
+            self.bot.send(chat, "⏳ کلید ذخیره شد. در حال تست روی pcapps.ir…")
+            r = de.whois_xml_domain_info("pcapps.ir", key)
+            if r.get("status") == "ok":
+                self.bot.send(chat,
+                              "✅ کلید API معتبر است.\n"
+                              f'🗓 انقضای pcapps.ir: {fmt_jalali(r["expiry"]).split(" - ")[0]}\n'
+                              f'⏳ باقی‌مانده: {de.remaining(r["expiry"])}',
+                              [[btn("🗓 مانیتور انقضای دامنه", "domexpp:0"),
+                                btn("🔙 بازگشت", "menu")]])
+            elif r.get("status") == "api_error":
+                self.bot.send(chat,
+                              f'⚠️ کلید ذخیره شد اما تست ناموفق بود:\n<code>{esc(r.get("message"))}</code>',
+                              [[btn("🗓 مانیتور انقضای دامنه", "domexpp:0")]])
+            else:
+                self.bot.send(chat,
+                              "⚠️ کلید ذخیره شد، اما برای pcapps.ir تاریخی برنگشت (ممکن است در دیتابیس تاریخی هم نباشد).",
+                              [[btn("🗓 مانیتور انقضای دامنه", "domexpp:0")]])
+        elif pend.get("type") == "domexp_date":
+            import re as _re
+            import domexpiry as de
+            s = text.translate(str.maketrans(
+                "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+                "01234567890123456789")).strip()
+            m = _re.match(r"^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$", s)
+            if not m:
+                self.bot.send(chat, "❌ قالب درست نیست. مثال: 1405/06/20")
+                return
+            try:
+                expiry = parse_jalali_datetime(
+                    f"{m[1]}/{int(m[2])}/{int(m[3])} 12:00")
+            except ValueError:
+                self.bot.send(chat, "❌ تاریخ نامعتبر است. دوباره بفرستید (مثلاً 1405/06/20):")
+                return
+            if expiry <= de._now_ms():
+                self.bot.send(chat, "⚠️ این تاریخ گذشته است. تاریخ انقضای آینده را بفرستید:")
+                return
+            self.store.delete(f"pend:{chat}")
+            lst = self._domexp_list()
+            item = next((x for x in lst
+                         if x.get("domain") == pend.get("domain")), None)
+            if not item:
+                self.bot.send(chat, "❌ دامنه در مانیتور پیدا نشد.",
+                              [[btn("🗓 مانیتور انقضای دامنه", "domexpp:0")]])
+                return
+            item["manual"] = True
+            item["status"] = "ok"
+            item["expiry"] = expiry
+            item["last_alert_day"] = None
+            self.store.put_json("dom_expiry", lst)
+            self.bot.send(chat,
+                          f'✅ تاریخ انقضای <code>{esc(pend.get("domain"))}</code> ثبت شد.\n'
+                          f'🗓 انقضا: {fmt_jalali(expiry).split(" - ")[0]}\n'
+                          f'⏳ باقی‌مانده: {de.remaining(expiry)}',
+                          [[btn("🗓 مانیتور انقضای دامنه", "domexpp:0"),
+                            btn("🔙 بازگشت", "menu")]])
         elif pend.get("type") == "pg_search":
             self.store.delete(f"pend:{chat}")
             self._pg_users(chat, 0, pend["panel"], 0, text.strip().lower())
@@ -3245,6 +3403,224 @@ class Router:
         self._show(chat, mid,
                    f"✅ {ok} از {len(zeros)} رکورد بدون ترافیک حذف شد.",
                    [[btn("📊 ترافیک", "traf")]])
+
+    # ---------- Domain expiry monitor ----------
+
+    def _domexp_list(self) -> list:
+        lst = self.store.get_json("dom_expiry", [])
+        return lst if isinstance(lst, list) else []
+
+    def _domexp_cfg(self) -> dict:
+        c = self.store.get_json("dom_expiry_cfg", {}) or {}
+        return {"provider": c.get("provider")
+                or "whoisxmlapi_domaininfo",
+                "key": c.get("key") if isinstance(c.get("key"), str) else ""}
+
+    def _domexp_home(self, chat: int, mid: int = 0, page: int = 0) -> None:
+        import domexpiry as de
+        now = de._now_ms()
+        lst = self._domexp_list()
+        srt = sorted(lst, key=lambda x: x.get("expiry")
+                     if isinstance(x.get("expiry"), (int, float))
+                     else 8640000000000000)
+        cfg = self._domexp_cfg()
+        text = "🗓 مانیتور انقضای دامنه\n\n"
+        text += ("ℹ️ دامنه‌های بین‌المللی از RDAP و دامنه‌های .ir از whois.nic.ir استعلام می‌شوند.\n")
+        text += ("🔑 کلید API ثبت شده؛ برای دامنه‌های .ir که ایرنیک مخفی کرده، از دیتابیس تاریخی (WhoisXMLAPI) استعلام می‌شود.\n\n"
+                 if cfg["key"] else
+                 "⚠️ ایرنیک تاریخ دامنه‌های .ir را حذف/مخفی کرده. برای استعلام خودکار، «🔑 ثبت کلید API» را بزن؛ وگرنه از «✍️ ورود دستی» تاریخ را ثبت کن.\n\n")
+        if not srt:
+            text += ("📭 دامنه‌ای ثبت نشده. از دکمه‌های زیر اضافه کن:\n"
+                     "• «🌍 افزودن از اکانت‌ها»: همهٔ دامنه‌های اکانت‌های کلودفلر یک‌جا اضافه می‌شوند.\n"
+                     "• «✍️ ورود دستی»: یک دامنه را با نام یا با تاریخ دستی ثبت کن.")
+        else:
+            text += f"📌 {len(srt)} دامنه (مرتب بر اساس نزدیک‌ترین انقضا):\n\n"
+            per = 30
+            pages = max(1, (len(srt) + per - 1) // per)
+            p = max(0, min(page, pages - 1))
+            for it in srt[p * per:(p + 1) * per]:
+                text += de.line(it, now) + "\n"
+                if isinstance(it.get("expiry"), (int, float)):
+                    text += f'   🗓 انقضا: {fmt_jalali(it["expiry"]).split(" - ")[0]}\n'
+            if pages > 1:
+                text += f"\nصفحه {p + 1} از {pages}"
+        kb = [[btn("🌍 افزودن از اکانت‌ها", "domexpall"),
+               btn("✍️ ورود دستی", "domexpa")]]
+        if srt:
+            kb.append([btn("🗓 ثبت تاریخ دستی", "domexpcal"),
+                       btn("🗑 حذف دامنه", "domexpd")])
+        kb.append([btn("🔄 استعلام دوبارهٔ همه", "domexp")])
+        kb.append([btn("🔑 کلید API (ثبت‌شده ✅)" if cfg["key"]
+                       else "🔑 ثبت کلید API", "domexpkey")])
+        kb.append([btn("🔙 بازگشت", "dommon"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid, text[:4000], kb)
+
+    def _domexp_refresh(self, chat: int, mid: int) -> None:
+        self._show(chat, mid, "⏳ در حال استعلام دامنه‌ها…")
+        self._domexp_check_all()
+        self._domexp_home(chat, mid, 0)
+
+    def _domexp_check_all(self, batch: int = 8) -> list:
+        import domexpiry as de
+        lst = self._domexp_list()
+        cfg = self._domexp_cfg()
+        key = cfg["key"]
+        for it in lst:
+            if it.get("manual") and isinstance(it.get("expiry"), (int, float)):
+                continue
+            r = de.fetch_domain_expiry(it.get("domain"), key)
+            if r.get("status") == "ok":
+                it["status"] = "ok"
+                it["expiry"] = r.get("expiry")
+            else:
+                it["status"] = r.get("status")
+                it["expiry"] = None
+        self.store.put_json("dom_expiry", lst)
+        return lst
+
+    def _domexp_add_all(self, chat: int, mid: int) -> None:
+        self._show(chat, mid, "⏳ در حال خواندن دامنه‌ها از همهٔ اکانت‌ها…")
+        import re as _re
+        names, seen = [], set()
+        for z in self._cf_all_zones():
+            d = str(z.get("name") or "").lower().strip()
+            if d and _re.match(r"^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$", d) \
+                    and d not in seen:
+                seen.add(d)
+                names.append(d)
+        if not names:
+            self._show(chat, mid,
+                       "📭 دامنه‌ای در اکانت‌های کلودفلر پیدا نشد.",
+                       [[btn("🔙 بازگشت", "domexp"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        lst = self._domexp_list()
+        have = {x.get("domain") for x in lst}
+        added = 0
+        import time as _t
+        for d in names:
+            if d in have:
+                continue
+            lst.append({"domain": d, "status": "pending", "expiry": None,
+                        "added": int(_t.time() * 1000)})
+            added += 1
+        self.store.put_json("dom_expiry", lst)
+        if not added:
+            self._show(chat, mid,
+                       f"✅ همهٔ {len(names)} دامنه از قبل در مانیتور بودند.",
+                       [[btn("🔙 بازگشت", "domexp"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        self.bot.send(chat, f"⏳ {added} دامنهٔ جدید اضافه شد. در حال استعلام…")
+        self._domexp_check_all()
+        self._domexp_home(chat, 0, 0)
+
+    def _domexp_cal_list(self, chat: int, mid: int) -> None:
+        lst = self._domexp_list()
+        if not lst:
+            self._show(chat, mid, "📭 دامنه‌ای ثبت نشده.",
+                       [[btn("🔙 بازگشت", "domexpp:0"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        hidden = [x for x in lst if x.get("status") != "ok"]
+        show = hidden or lst
+        kb = [[btn(f'🗓 {x.get("domain")}',
+                   "domexpi:" + urllib.parse.quote(str(x.get("domain"))))]
+              for x in show[:30]]
+        kb.append([btn("🔙 بازگشت", "domexpp:0"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   "🗓 برای کدام دامنه تاریخ انقضا را دستی ثبت/اصلاح کنیم؟",
+                   kb)
+
+    def _domexp_cal_domain(self, chat: int, mid: int, dom: str) -> None:
+        item = next((x for x in self._domexp_list()
+                     if x.get("domain") == dom), None)
+        if not item:
+            self._show(chat, mid, "❌ دامنه پیدا نشد.",
+                       [[btn("🔙 بازگشت", "domexpp:0"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        self.store.put_json(f"pend:{chat}",
+                            {"type": "domexp_date", "domain": dom}, 900)
+        cur = (f'\n\n🗓 فعلی: {fmt_jalali(item["expiry"]).split(" - ")[0]}'
+               if isinstance(item.get("expiry"), (int, float)) else "")
+        self._show(chat, mid,
+                   f'🗓 تاریخ انقضای <code>{esc(dom)}</code> را به شمسی بفرستید:\n'
+                   "مثال: 1405/06/20\n\n"
+                   "ℹ️ بعد از ثبت، تاریخ دستی مرجع است و دیگر استعلام خودکار روی آن انجام نمی‌شود."
+                   + cur,
+                   [[btn("🔙 انصراف", "domexpp:0")]])
+
+    def _domexp_del_list(self, chat: int, mid: int) -> None:
+        lst = self._domexp_list()
+        if not lst:
+            self._show(chat, mid, "📭 دامنه‌ای ثبت نشده.",
+                       [[btn("🔙 بازگشت", "domexpp:0"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        kb = [[btn(f'🗑 {x.get("domain")}', f"domexpdy:{i}")]
+              for i, x in enumerate(lst[:40])]
+        kb.append([btn("🔙 بازگشت", "domexpp:0"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "🗑 کدام دامنه از مانیتور حذف شود؟", kb)
+
+    def _domexp_del(self, chat: int, mid: int, idx: str) -> None:
+        lst = self._domexp_list()
+        try:
+            rm = lst.pop(int(idx))
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ دامنه پیدا نشد.", home_kb())
+            return
+        self.store.put_json("dom_expiry", lst)
+        self._show(chat, mid,
+                   f'✅ «{esc(rm.get("domain"))}» از مانیتور حذف شد.',
+                   [[btn("🗓 مانیتور انقضای دامنه", "domexpp:0")]])
+
+    def _domexp_key_page(self, chat: int, mid: int) -> None:
+        cfg = self._domexp_cfg()
+        has = bool(cfg["key"])
+        masked = (cfg["key"][:4] + "…" + cfg["key"][-4:]) if has else "—"
+        kb = [[btn("♻️ تغییر کلید API" if has else "🔑 ثبت کلید API",
+                   "domexpk")]]
+        if has:
+            kb.append([btn("🧪 تست روی pcapps.ir", "domexptest")])
+            kb.append([btn("🗑 حذف کلید", "domexpkdel")])
+        kb.append([btn("🔙 بازگشت", "domexpp:0"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   "🔑 کلید API انقضای دامنه\n\n"
+                   f'وضعیت: {"ثبت‌شده ✅" if has else "ثبت‌نشده ❌"}\n'
+                   f'کلید: <code>{esc(masked)}</code>\n'
+                   "سرویس: WhoisXMLAPI — Domain Info API\n\n"
+                   "چرا لازم است؟ ایرنیک تاریخ انقضای دامنه‌های .ir را از whois حذف کرده؛ این API فیلدهای حذف‌شده را از دیتابیس تاریخی پر می‌کند.\n\n"
+                   "برای گرفتن کلید (۵۰۰ کردیت رایگان، بدون کارت):\n"
+                   "domain-info.whoisxmlapi.com/api/signup\n\n"
+                   "کلید فقط در همین ربات ذخیره می‌شود.",
+                   kb)
+
+    def _domexp_test(self, chat: int, mid: int) -> None:
+        import domexpiry as de
+        cfg = self._domexp_cfg()
+        if not cfg["key"]:
+            self._show(chat, mid, "❌ کلیدی ثبت نشده.",
+                       [[btn("🔙 بازگشت", "domexpkey"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        self._show(chat, mid, "⏳ در حال تست کلید روی pcapps.ir…")
+        r = de.whois_xml_domain_info("pcapps.ir", cfg["key"])
+        if r.get("status") == "ok":
+            self._show(chat, mid,
+                       "✅ کلید معتبر است.\n"
+                       f'🗓 انقضای pcapps.ir: {fmt_jalali(r["expiry"]).split(" - ")[0]}\n'
+                       f'⏳ باقی‌مانده: {de.remaining(r["expiry"])}',
+                       [[btn("🔙 بازگشت", "domexpkey"),
+                         btn("🏠 خانه", "menu")]])
+        elif r.get("status") == "api_error":
+            self._show(chat, mid,
+                       f'⚠️ تست ناموفق بود:\n<code>{esc(r.get("message"))}</code>',
+                       [[btn("🔙 بازگشت", "domexpkey")]])
+        else:
+            self._show(chat, mid,
+                       "⚠️ برای pcapps.ir تاریخی برنگشت (ممکن است در دیتابیس تاریخی هم نباشد).",
+                       [[btn("🔙 بازگشت", "domexpkey")]])
 
     def _sslm_home(self, chat: int, mid: int = 0) -> None:
         from sslmon import get_monitors, check_all, result_line

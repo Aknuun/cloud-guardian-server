@@ -125,6 +125,7 @@ def main() -> None:
     last_flush = float(_meta.get("flush", _boot))
     last_digest_u = float(_meta.get("digest_u", _boot))
     last_digest_d = float(_meta.get("digest_d", _boot))
+    last_domexp = float(_meta.get("domexp", _boot))
     import queue as _q
 
     def _poll(out: _q.Queue, off: int) -> None:
@@ -217,13 +218,21 @@ def main() -> None:
                 _al.run_digest(bot, store, panels, "days",
                                int(cfg["admin_id"]),
                                lambda p: _Pg(p["url"], p["username"],
-                                             p["password"]))
+                                              p["password"]))
                 last_digest_d = now
+            if now - last_domexp > 86400:
+                try:
+                    from monitors import run_domexp
+                    run_domexp(bot, store, router, int(cfg["admin_id"]))
+                except Exception as e:
+                    print(f"domexp: {e}", flush=True)
+                last_domexp = now
             try:
                 store.put_json("sched_meta",
                                {"flush": last_flush,
                                 "digest_u": last_digest_u,
-                                "digest_d": last_digest_d})
+                                "digest_d": last_digest_d,
+                                "domexp": last_domexp})
             except Exception:
                 pass
         except Exception as e:
