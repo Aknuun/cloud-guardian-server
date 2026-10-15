@@ -88,6 +88,54 @@ def _pg_tg_username(bot_token: str) -> str:
         return ""
 
 
+def _value_hint(value: str, rtype: str):
+    """None یعنی معتبر؛ وگرنه متن راهنمای فارسی. مثل کد قبلی."""
+    import ipaddress as _ip
+    import re as _re
+    s = str(value or "").strip()
+    if not s:
+        return "مقدار خالی است؛ یک IPv4 یا نام دامنهٔ معتبر بفرستید."
+
+    def _is_ip(x):
+        try:
+            _ip.ip_address(x)
+            return True
+        except ValueError:
+            return False
+
+    def _is_v4(x):
+        try:
+            return isinstance(_ip.ip_address(x), _ip.IPv4Address)
+        except ValueError:
+            return False
+
+    def _host(x):
+        return bool(_re.match(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$",
+                              x, _re.I))
+    if rtype == "CNAME":
+        if _is_ip(s):
+            return "برای رکورد CNAME باید نام دامنهٔ معتبر بفرستید (مثل sub.example.com)؛ آی‌پی خام پذیرفته نمی‌شود."
+        if _host(s):
+            return None
+        return "برای رکورد CNAME باید نام دامنهٔ معتبر بفرستید (مثل sub.example.com)."
+    if rtype == "A":
+        if _is_v4(s):
+            return None
+        if _is_ip(s):
+            return "برای رکورد A باید IPv4 معتبر بفرستید (مثل 1.2.3.4)؛ مقدار ارسالی IPv6 است."
+        if _host(s):
+            return "برای رکورد A باید IPv4 معتبر بفرستید (مثل 1.2.3.4)؛ نام دامنه پذیرفته نمی‌شود."
+        return "برای رکورد A باید IPv4 معتبر بفرستید (مثل 1.2.3.4)."
+    if rtype == "AAAA":
+        try:
+            if isinstance(_ip.ip_address(s), _ip.IPv6Address):
+                return None
+        except ValueError:
+            pass
+        return "برای رکورد AAAA باید IPv6 معتبر بفرستید."
+    return None
+
+
 class Router:
     def __init__(self, bot: Bot, store: Store, cf: Cf, admin_id: int,
                  cf_token: str = ""):
@@ -771,8 +819,13 @@ class Router:
             self.store.put_json(f"pend:{chat}",
                                 {"type": "cfedit", "acc": acc, "zid": zid,
                                  "rid": rid}, 900)
-            self._show(chat, mid, "✏️ مقدار جدید را بفرستید:",
-                       [[btn("❌ انصراف", f"cfr:{rid}")]])
+            r = self._cf_find(acc, zid, rid)
+            self._show(chat, mid,
+                       "✏️ مقدار جدید را بفرستید (IP یا هدف CNAME):\n\n"
+                       f'📛 سابی که تغییر می‌کند: <code>{esc((r or {}).get("name", ""))}</code>\n\n'
+                       "🔴 مقدار فعلی که عوض می‌شود:\n"
+                       f'<code>{esc((r or {}).get("content", ""))}</code>',
+                       [[btn("⬅️ انصراف", f"cfr:{rid}")]])
         elif data.startswith("cfadd:"):
             _, acc, zid = data.split(":")
             self._cf_add_start(chat, mid, int(acc), zid)
@@ -1350,6 +1403,12 @@ class Router:
             if not r:
                 self.store.delete(f"pend:{chat}")
                 self.bot.send(chat, "❌ رکورد پیدا نشد.")
+                return
+            hint = _value_hint(text.strip(), str(r.get("type", "")).upper())
+            if hint:
+                self.bot.send(chat,
+                              f"❌ {hint}\n\nپیام اصلاح‌شده را دوباره بفرستید؛ همین‌جا ویرایش می‌شود.",
+                              [[btn("⬅️ انصراف", f'cfr:{pend["rid"]}')]])
                 return
             try:
                 self._cf_client(pend.get("acc", 0)).update_record(
