@@ -358,18 +358,24 @@ class Router:
             self._srv_reboot(chat, mid, data[12:])
         elif data == "srvmon":
             self._srvmon_home(chat, mid)
-        elif data == "srvmonoff":
+        elif data == "srvmontg":
             from monitors import srvmon_cfg, srvmon_save
             cfg = srvmon_cfg(self.store)
             cfg["enabled"] = not cfg.get("enabled", True)
             srvmon_save(self.store, cfg)
             self._srvmon_home(chat, mid)
-        elif data.startswith("srvmonnum:"):
+        elif data.startswith("srvmonh:"):
             self.store.put_json(f"pend:{chat}",
                                 {"type": "srvmon_num",
-                                 "key": data[10:]}, 600)
+                                 "key": data[8:]}, 600)
             self._show(chat, mid, "🔢 عدد جدید را بفرستید:",
                        [[btn("🔙 انصراف", "srvmon")]])
+        elif data == "srvmonrun":
+            self._show(chat, mid, "⏳ در حال بررسی همه سرورها…",
+                       home_kb())
+            self._srvmon_run(chat)
+        elif data.startswith("srvstats:"):
+            self._srvstats(chat, mid, data[9:])
         elif data == "hf":
             self._hf_home(chat, mid)
         elif data == "hftg":
@@ -1405,8 +1411,10 @@ class Router:
             except (ValueError, AssertionError):
                 self.bot.send(chat, "❌ عدد نامعتبر است.")
                 return
+            key = {"cpu": "cpuPct", "mem": "memPct", "disk": "diskPct",
+                   "cool": "cooldownMin"}.get(pend.get("key", ""), "cpuPct")
             cfg = srvmon_cfg(self.store)
-            cfg[pend.get("key", "cpuPct")] = v
+            cfg[key] = v
             srvmon_save(self.store, cfg)
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, "✅ ذخیره شد.")
@@ -2240,23 +2248,80 @@ class Router:
         self.bot.send(chat, "✅ حذف شد.")
         self._srv_home(chat, 0)
 
-    def _srvmon_home(self, chat: int, mid: int = 0) -> None:
+    def _srvmon_run(self, chat: int) -> None:
+        from monitors import run_srvmon
+        from sshop import stats as _stats
+        lst = self._srv_list()
+        n = run_srvmon(self.bot, self.store, lst, chat,
+                       lambda s: _stats(s.get("host"), s.get("user") or "root",
+                                        s.get("secret") or "",
+                                        s.get("port") or 22),
+                       manual=True)
+        if n == 0:
+            self.bot.send(chat, "✅ بررسی شد؛ هشدار تازه‌ای نیست.")
+
+    def _srvstats(self, chat: int, mid: int, idx: str) -> None:
+        try:
+            s = self._srv_list()[int(idx)]
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ سرور پیدا نشد.",
+                       [[btn("🖥 سرورها و مانیتورینگ", "srv")]])
+            return
+        self._show(chat, mid, "⏳ در حال جمع‌آوری آمار…", home_kb())
+        from sshop import stats as _stats
+        from monitors import _fmt_gb
+        st = _stats(s.get("host"), s.get("user") or "root",
+                    s.get("secret") or "", s.get("port") or 22)
+        if st.get("error"):
+            self._show(chat, mid,
+                       f'❌ وصل نشد: <code>{esc(st["error"][:200])}</code>',
+                       [[btn("🔄 بروزرسانی", f"srvstats:{idx}"),
+                         btn("⚙️ آستانه‌ها", "srvmon")],
+                        [btn("🔙 بازگشت", f'srvopen:{s.get("id")}'),
+                         btn("🏠 خانه", "menu")]])
+            return
+        up_d = (st.get("uptimeS") or 0) // 86400
+        up_h = ((st.get("uptimeS") or 0) % 86400) // 3600
+        mem, disk, cpu = st.get("mem") or {}, st.get("disk") or {}, \
+            st.get("cpu") or {}
+        short_ip = str(s.get("host") or "")[:15]
+        from monitors import _fmt_gb
+        txt = (f'📊 {s.get("name")}\n⏱ {up_d} روز و {up_h} ساعت')
+        kb = [[btn(f"🌐 {short_ip}", "noop", "plain"),
+               btn(f'⚙️ {cpu.get("pct", 0)}%', "noop", "plain"),
+               btn(f'🧠 {mem.get("pct", 0)}%', "noop", "plain"),
+               btn(f'🗄 {disk.get("pct", "—")}', "noop", "plain")],
+              [btn(f'⚙️ {cpu.get("cores", "?")} هسته', "noop", "plain"),
+               btn(f'🧠 {_fmt_gb(mem.get("usedMb"))}/{_fmt_gb(mem.get("totalMb"))}',
+                   "noop", "plain"),
+               btn(f'🗄 {disk.get("used", "—")}/{disk.get("total", "—")}',
+                   "noop", "plain"),
+               btn(f"⏱ {up_d}r {up_h}h", "noop", "plain")],
+              [btn("🔄 بروزرسانی", f"srvstats:{idx}"),
+               btn("⚙️ آستانه‌ها", "srvmon")],
+              [btn("🔙 بازگشت", f'srvopen:{s.get("id")}'),
+               btn("🏠 خانه", "menu")]]
+        self._show(chat, mid, txt, kb)
         from monitors import srvmon_cfg
         cfg = srvmon_cfg(self.store)
         txt = "\n".join([
             "📊 مانیتور سرورها", "",
-            f'وضعیت: {"روشن ✅" if cfg.get("enabled") else "خاموش ❌"}',
-            f'⏱ فاصله بررسی: هر {cfg.get("intervalMin")} دقیقه',
-            f'🖥 حد CPU: {cfg.get("cpuPct")}٪ · 🧮 حد RAM: {cfg.get("memPct")}٪ · 💾 حد دیسک: {cfg.get("diskPct")}٪'])
-        kb = [[btn("⏸ خاموش" if cfg.get("enabled") else "▶️ روشن",
-                   "srvmonoff")],
-              [btn(f'⏱ هر {cfg.get("intervalMin")} دقیقه',
-                   "srvmonnum:intervalMin")],
-              [btn(f'🖥 CPU {cfg.get("cpuPct")}٪', "srvmonnum:cpuPct"),
-               btn(f'🧮 RAM {cfg.get("memPct")}٪', "srvmonnum:memPct"),
-               btn(f'💾 دیسک {cfg.get("diskPct")}٪', "srvmonnum:diskPct")],
-              [btn("🔙 بازگشت", "srv"),
-               btn("🏠 خانه", "menu")]]
+            f'وضعیت: {"▶️ فعال" if cfg.get("enabled") else "⏸ متوقف"}', "",
+            "هشدار خودکار وقتی:",
+            f'• CPU بیش از {cfg.get("cpuPct")}% برود',
+            f'• RAM بیش از {cfg.get("memPct")}% برود',
+            f'• دیسک بیش از {cfg.get("diskPct")}% پر شود',
+            f'⏱ حداقل فاصلهٔ تکرار هشدار: {cfg.get("cooldownMin")} دقیقه',
+            "",
+            "برای تغییر هر آستانه، روی آن بزنید."])
+        kb = [[btn("⏸ توقف هشدار" if cfg.get("enabled")
+                   else "▶️ فعال‌سازی", "srvmontg")],
+              [btn(f'⚙️ CPU: {cfg.get("cpuPct")}%', "srvmonh:cpu"),
+               btn(f'🧠 RAM: {cfg.get("memPct")}%', "srvmonh:mem")],
+              [btn(f'🗄 دیسک: {cfg.get("diskPct")}%', "srvmonh:disk"),
+               btn(f'⏱ تکرار: {cfg.get("cooldownMin")}د', "srvmonh:cool")],
+              [btn("📊 بررسی الان", "srvmonrun")],
+              [btn("🏠 خانه", "menu")]]
         self._show(chat, mid, txt, kb)
 
     # ---------- Linode ----------

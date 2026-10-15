@@ -186,13 +186,13 @@ def main() -> None:
                     print(f"node: {e}", flush=True)
                 try:
                     from monitors import run_srvmon
-                    from sshop import run_cmd as _ssh
+                    from sshop import stats as _stats
                     run_srvmon(bot, store,
                                router._srv_list(), int(cfg["admin_id"]),
-                               lambda s, cmd: _ssh(
+                               lambda s: _stats(
                                    s.get("host"), s.get("user") or "root",
                                    s.get("secret") or "",
-                                   s.get("port") or 22, cmd))
+                                   s.get("port") or 22))
                 except Exception as e:
                     print(f"srvmon: {e}", flush=True)
             if now - _meta.get("hf", 0) > 60:

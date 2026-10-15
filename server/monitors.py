@@ -229,8 +229,8 @@ def get_node_monitors(store) -> list:
     return lst if isinstance(lst, list) else []
 
 
-SRVMON_DEFAULTS = {"enabled": True, "intervalMin": 30, "cpuPct": 85,
-                   "memPct": 90, "diskPct": 85}
+SRVMON_DEFAULTS = {"enabled": True, "cpuPct": 90, "memPct": 90,
+                   "diskPct": 90, "cooldownMin": 60}
 
 
 def srvmon_cfg(store) -> dict:
@@ -244,55 +244,99 @@ def srvmon_save(store, cfg: dict) -> None:
     store.put_json("srvmon_cfg", cfg)
 
 
-def run_srvmon(bot, store, servers: list, admin_id: int, ssh_run) -> int:
-    """CPU/RAM/disk check over SSH. Returns alerts sent."""
-    import re
+def _fmt_gb(mb) -> str:
+    try:
+        mb = float(mb)
+    except (ValueError, TypeError):
+        return "—"
+    return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{int(mb)} MB"
+
+
+def run_srvmon(bot, store, servers: list, admin_id: int, ssh_stats,
+               manual: bool = False) -> int:
+    """All-servers table + threshold alerts (like classic runSrvMonitor)."""
     import time
     cfg = srvmon_cfg(store)
-    if not cfg.get("enabled") or not servers:
+    if not cfg.get("enabled") and not manual:
         return 0
-    now = int(time.time() * 1000)
-    last = int(store.get("srvmon_last") or 0)
-    if last and now - last < max(5, float(cfg.get("intervalMin", 30))) * 60000:
+    if not servers:
         return 0
-    store.put("srvmon_last", str(now))
-    sent = 0
-    for s in servers:
-        sid = str(s.get("id"))
-        r = ssh_run(s, "echo CPU:$(awk '{print $1}' /proc/loadavg) "
-                       "CORES:$(nproc) MEM:$(free | awk '/Mem:/{print $3/$2*100}') "
-                       "DISK:$(df / | awk 'NR==2{print $5}')")
-        if not r.get("ok"):
+    now_ms = int(time.time() * 1000)
+    if not manual:
+        last = int(store.get("srv_mon_last") or 0)
+        if last and now_ms - last < 60 * 60000:
+            return 0
+        store.put("srv_mon_last", str(now_ms))
+    alerts, rows = [], [
+        [{"text": "🌐 IP", "callback_data": "noop", "style": "plain"},
+         {"text": "⚙️ CPU", "callback_data": "noop", "style": "plain"},
+         {"text": "🧠 RAM", "callback_data": "noop", "style": "plain"}]]
+    for si, s in enumerate(servers):
+        st = ssh_stats(s)
+        short_ip = str(s.get("host") or s.get("name") or "")[:16]
+        if st.get("error"):
+            alerts.append(f'🔴 <code>{s.get("name")}</code> — خطای اتصال SSH '
+                          f'(<code>{st["error"][:120]}</code>)')
+            rows.append([{"text": f"🔴 {short_ip}",
+                          "callback_data": f"srvopen:{si}"},
+                         {"text": "—", "callback_data": "noop",
+                          "style": "plain"},
+                         {"text": "—", "callback_data": "noop",
+                          "style": "plain"}])
             continue
-        m = dict(re.findall(r"(CPU|CORES|MEM|DISK):(\S+)", r.get("out", "")))
+        mem = st.get("mem") or {}
+        disk = st.get("disk") or {}
+        cpu = st.get("cpu") or {}
         try:
-            load, cores = float(m.get("CPU", 0)), max(1, int(m.get("CORES", 1)))
-            cpu = load / cores * 100
-            mem = float(str(m.get("MEM", 0)))
-            disk = float(str(m.get("DISK", "0%")).rstrip("%"))
+            mem_pct = round(mem["usedMb"] / mem["totalMb"] * 100) \
+                if mem.get("totalMb") else 0
+        except (KeyError, TypeError, ZeroDivisionError):
+            mem_pct = 0
+        try:
+            disk_pct = int(str(disk.get("pct", "0")).rstrip("%"))
         except (ValueError, TypeError):
-            continue
-        bad = []
-        if cpu >= float(cfg.get("cpuPct", 85)):
-            bad.append(f"CPU {cpu:.0f}٪")
-        if mem >= float(cfg.get("memPct", 90)):
-            bad.append(f"RAM {mem:.0f}٪")
-        if disk >= float(cfg.get("diskPct", 85)):
-            bad.append(f"دیسک {disk:.0f}٪")
-        if not bad:
-            continue
-        cool = store.get_json("srvmon_cool", {}) or {}
-        if now - int(cool.get(sid, 0)) < 6 * 3600000:
-            continue
-        cool[sid] = now
-        store.put_json("srvmon_cool", cool)
-        try:
-            bot.send(admin_id,
-                     f'⚠️ فشار سرور «{s.get("name")}»\n' + "، ".join(bad))
-            sent += 1
-        except Exception:
-            pass
-    return sent
+            disk_pct = 0
+        cpu_pct = int(cpu.get("pct") or 0)
+        issues = []
+        if cpu_pct >= float(cfg.get("cpuPct", 90)):
+            issues.append(f"CPU {cpu_pct}%")
+        if mem_pct >= float(cfg.get("memPct", 90)):
+            issues.append(f"RAM {mem_pct}%")
+        if disk_pct >= float(cfg.get("diskPct", 90)):
+            issues.append(f"دیسک {disk_pct}%")
+        dot = "🟡" if issues else "🟢"
+        rows.append([{"text": f"{dot} {short_ip}",
+                      "callback_data": f"srvopen:{si}"},
+                     {"text": f"{cpu_pct}%", "callback_data": "noop",
+                      "style": "plain"},
+                     {"text": f"{mem_pct}%", "callback_data": "noop",
+                      "style": "plain"}])
+        if issues:
+            cool_key = f'srv_cool:{s.get("id") or s.get("host")}'
+            try:
+                last_a = int(store.get(cool_key) or 0)
+            except (ValueError, TypeError):
+                last_a = 0
+            if manual or not last_a or \
+               now_ms - last_a > float(cfg.get("cooldownMin", 60)) * 60000:
+                store.put(cool_key, str(now_ms),
+                          int(max(3600, float(cfg.get("cooldownMin", 60)) * 120)))
+                alerts.append(f'<code>{s.get("name")}</code> — '
+                              + " · ".join(f"⚠️ {x}" for x in issues))
+    if not alerts and not manual:
+        return 0
+    msg = "📊 گزارش مانیتور سرورها\n\n"
+    if alerts:
+        msg += "\n".join(alerts) + "\n"
+    if not alerts and manual:
+        msg += "✅ همهٔ سرورها سالم هستند."
+    kb = rows + [[{"text": "📊 مانیتور سرورها", "callback_data": "srvmon"}],
+                 [{"text": "🏠 خانه", "callback_data": "menu"}]]
+    try:
+        bot.send(admin_id, msg, kb)
+    except Exception:
+        return 0
+    return len(alerts)
 
 
 def _node_state(store, mid: str) -> dict:
