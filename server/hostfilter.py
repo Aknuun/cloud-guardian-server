@@ -159,9 +159,11 @@ def _run(bot, store, panels, admin_id, cf_accs, pg_client, force,
         except Exception:
             continue
         for h in hosts or []:
+            if not isinstance(h, dict):
+                continue
             domains = []
             for field in ("address", "sni", "host"):
-                v = (h.get("host") or {}).get(field)
+                v = h.get(field)
                 vals = v if isinstance(v, list) else ([v] if v else [])
                 domains.extend(str(x) for x in vals if x)
             domains = sorted(set(domains))
@@ -247,7 +249,7 @@ def _swap(bot, panel, panel_token: str, host, old_name: str, cf_accs,
                     cli.add_record(z["id"], "CNAME", new_name, old_name,
                                    1, False)
                 repl = {low: new_name}
-                body = dict(host.get("host") or {})
+                body = dict(host)
                 for field in ("address", "sni", "host"):
                     v = body.get(field)
                     if isinstance(v, list):

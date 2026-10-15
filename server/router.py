@@ -2059,9 +2059,11 @@ class Router:
                 continue
             lines.append(f'🖥 {p.get("name")} ({len(hosts)} هاست):')
             for h in hosts[:30]:
+                if not isinstance(h, dict):
+                    continue
                 doms = []
                 for field in ("address", "sni", "host"):
-                    v = (h.get("host") or {}).get(field)
+                    v = h.get(field)
                     vals = v if isinstance(v, list) else ([v] if v else [])
                     doms.extend(str(x) for x in vals if x)
                 for dv in sorted(set(doms))[:6]:
