@@ -26,7 +26,50 @@ PAGE = 30
 
 # 📌 قانون چیدمان (مثل کد قبلی): دکمه‌ها همیشه کنار هم در ردیف؛
 # متن کوتاه → ۳/۴ ستونه؛ فقط متن خیلی بلند تک‌ستونه؛ تأیید دوتایی کنار هم.
-EMPTY_BTN = {"text": " ", "callback_data": "noop"}
+EMPTY_BTN = {"text": " ", "callback_data": "noop"}
+
+
+SETTINGS_INFO = {
+    "ssl": {"label": "حالت SSL", "type": "enum",
+            "values": {"off": "خاموش", "flexible": "انعطاف‌پذیر",
+                       "full": "کامل", "strict": "کامل (سخت)"}},
+    "min_tls_version": {"label": "حداقل نسخه TLS", "type": "enum",
+                        "values": {"1.0": "1.0", "1.1": "1.1",
+                                   "1.2": "1.2", "1.3": "1.3"}},
+    "tls_1_3": {"label": "TLS 1.3", "type": "bool"},
+    "always_use_https": {"label": "همیشه HTTPS", "type": "bool"},
+    "automatic_https_rewrites": {"label": "بازنویسی خودکار HTTPS",
+                                 "type": "bool"},
+    "security_level": {"label": "سطح امنیت", "type": "enum",
+                       "values": {"off": "خاموش", "essentially_off": "خیلی کم",
+                                  "low": "کم", "medium": "متوسط",
+                                  "high": "زیاد", "under_attack": "حالت حمله"}},
+    "http2": {"label": "HTTP/2", "type": "bool"},
+    "http3": {"label": "HTTP/3", "type": "bool"},
+    "brotli": {"label": "فشرده‌سازی Brotli", "type": "bool"},
+    "ipv6": {"label": "IPv6", "type": "bool"},
+    "always_online": {"label": "همیشه آنلاین", "type": "bool"},
+}
+SSL_KEYS = ["ssl", "min_tls_version", "tls_1_3", "always_use_https",
+            "automatic_https_rewrites"]
+SEC_KEYS = ["security_level"]
+PERF_KEYS = ["http2", "http3", "brotli", "ipv6", "always_online"]
+
+
+def _setting_group_keys(setting: str) -> list:
+    if setting in SSL_KEYS:
+        return SSL_KEYS
+    if setting in SEC_KEYS:
+        return SEC_KEYS
+    return PERF_KEYS
+
+
+def _setting_group_title(setting: str) -> str:
+    if setting in SSL_KEYS:
+        return "🔒 SSL / TLS"
+    if setting in SEC_KEYS:
+        return "🛡 امنیت"
+    return "⚡ کارایی"
 
 
 def _grid(btns: list, cols: int) -> list:
@@ -397,13 +440,35 @@ class Router:
                            [[btn("❌ انصراف", "zones")]])
         elif data in ("noop",
                       "fmail",
-                      "zset", "zmail", "ztraf", "cref", "rtraf",
+                      "zmail", "ztraf", "cref",
                       "srvsub", "srvpw",
                       "srvupd", "srvedit"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
         elif data == "sslm":
             self._sslm_home(chat, mid)
+        elif data == "zset":
+            self._cf_zset(chat, mid)
+        elif data in ("zssl", "zsec", "zperf"):
+            self._cf_settings_group(chat, mid, data)
+        elif data.startswith("ztog:"):
+            self._cf_setting_toggle(chat, mid, data[5:])
+        elif data.startswith("zval:"):
+            self._cf_setting_enum(chat, mid, data[5:])
+        elif data.startswith("zvset:"):
+            p = data.split(":", 2)
+            self._cf_setting_set(chat, mid, p[1],
+                                 p[2] if len(p) > 2 else "")
+        elif data == "zd":
+            self._cf_zone_details(chat, mid)
+        elif data == "zpurge":
+            self._cf_purge(chat, mid)
+        elif data == "zdev":
+            self._cf_dev_toggle(chat, mid)
+        elif data == "zpause":
+            self._cf_zone_pause(chat, mid)
+        elif data == "rtraf":
+            self._cf_record_traffic(chat, mid)
         elif data == "ssdma":
             self.store.put_json(f"pend:{chat}", {"type": "ssl_host"}, 600)
             self._show(chat, mid,
@@ -1167,6 +1232,253 @@ class Router:
 
     ZONE_PAGE = 20
 
+    def _cf_zctx(self, chat: int):
+        sess = self._cf_sess(chat)
+        acc, zid = sess.get("acc"), sess.get("zid")
+        if acc is None or not zid:
+            return None, None, None, None
+        try:
+            client = self._cf_client(acc)
+            zname = next((z["name"] for z in client.zones()
+                          if z["id"] == zid), zid)
+        except (IndexError, CfError):
+            return None, None, None, None
+        return acc, zid, zname, client
+
+    def _cf_back_kb(self, acc, zid, extra=None):
+        kb = list(extra or [])
+        kb.append([btn("🔙 بازگشت", f"cfz:{acc}:{zid}"),
+                   btn("🏠 خانه", "menu")])
+        return kb
+
+    def _cf_zset(self, chat: int, mid: int) -> None:
+        acc, zid, zname, client = self._cf_zctx(chat)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد؛ دامنه را دوباره باز کن.",
+                       home_kb())
+            return
+        try:
+            z = client.zone(zid)
+            status = z.get("status")
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}", home_kb())
+            return
+        kb = grid2([
+            btn("🔒 SSL / TLS", "zssl"),
+            btn("🛡 امنیت", "zsec"),
+            btn("⚡ کارایی", "zperf"),
+            btn("ℹ️ جزئیات دامنه", "zd"),
+            btn("🧹 پاکسازی کامل کش", "zpurge"),
+            btn("🚧 حالت توسعه", "zdev"),
+            btn("✉️ ایمیل (فوروارد)", "zmail"),
+            btn("⏸️ توقف دامنه" if status == "active" else "▶️ فعال‌سازی دامنه",
+                "zpause"),
+        ])
+        kb.append([btn("🔙 بازگشت", f"cfz:{acc}:{zid}"),
+                   btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   f"⚙️ تنظیمات {esc(zname)}:\n\nوضعیت: {esc(status)}", kb)
+
+    def _cf_settings_group(self, chat: int, mid: int, which: str) -> None:
+        acc, zid, zname, client = self._cf_zctx(chat)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد؛ دامنه را دوباره باز کن.",
+                       home_kb())
+            return
+        keys = {"zssl": SSL_KEYS, "zsec": SEC_KEYS,
+                "zperf": PERF_KEYS}[which]
+        title = {"zssl": "🔒 SSL / TLS", "zsec": "🛡 امنیت",
+                 "zperf": "⚡ کارایی"}[which]
+        try:
+            smap = client.settings(zid)
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}", home_kb())
+            return
+        btns = []
+        for k in keys:
+            info = SETTINGS_INFO[k]
+            cur = smap.get(k)
+            if info["type"] == "bool":
+                on = cur == "on"
+                btns.append(btn(f'{"✅" if on else "❌"} {info["label"]}',
+                                f"ztog:{k}"))
+            else:
+                btns.append(btn(f'🔧 {info["label"]}: '
+                                f'{info["values"].get(cur, cur)}',
+                                f"zval:{k}"))
+        kb = grid2(btns)
+        kb.append([btn("🔙 بازگشت", "zset"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   f"{title} — {esc(zname)}:\n\nبرای تغییر روی هر گزینه کلیک کنید:",
+                   kb)
+
+    def _cf_setting_toggle(self, chat: int, mid: int, setting: str) -> None:
+        acc, zid, zname, client = self._cf_zctx(chat)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        try:
+            cur = client.settings(zid).get(setting)
+            client.set_setting(zid, setting, "off" if cur == "on" else "on")
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطا:\n{esc(e)}",
+                       [[btn("🔙 بازگشت", "zset")]])
+            return
+        which = ("zssl" if setting in SSL_KEYS
+                 else "zsec" if setting in SEC_KEYS else "zperf")
+        self._cf_settings_group(chat, mid, which)
+
+    def _cf_setting_enum(self, chat: int, mid: int, setting: str) -> None:
+        acc, zid, zname, client = self._cf_zctx(chat)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        info = SETTINGS_INFO.get(setting)
+        if not info:
+            self._show(chat, mid, "❌ تنظیم ناشناخته.", home_kb())
+            return
+        try:
+            cur = client.settings(zid).get(setting)
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطا:\n{esc(e)}", home_kb())
+            return
+        btns = [btn(f'{"✅ " if v == cur else ""}{lab}',
+                    f"zvset:{setting}:{v}")
+                for v, lab in info["values"].items()]
+        kb = grid2(btns)
+        kb.append([btn("🔙 بازگشت", "zset"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid,
+                   f'🔧 {info["label"]}:\n\nمقدار فعلی: '
+                   f'{esc(info["values"].get(cur, cur))}', kb)
+
+    def _cf_setting_set(self, chat: int, mid: int, setting: str,
+                        value: str) -> None:
+        acc, zid, zname, client = self._cf_zctx(chat)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        try:
+            client.set_setting(zid, setting, value)
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطا:\n{esc(e)}",
+                       [[btn("🔙 بازگشت", "zset")]])
+            return
+        which = ("zssl" if setting in SSL_KEYS
+                 else "zsec" if setting in SEC_KEYS else "zperf")
+        self._cf_settings_group(chat, mid, which)
+
+    def _cf_zone_details(self, chat: int, mid: int) -> None:
+        acc, zid, zname, client = self._cf_zctx(chat)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        try:
+            z = client.zone(zid)
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطا:\n{esc(e)}", home_kb())
+            return
+        ns = z.get("name_servers") or []
+        lines = [
+            "ℹ️ جزئیات دامنه", "",
+            f'📛 نام: <code>{esc(z.get("name"))}</code>',
+            f'🆔 شناسه: <code>{esc(z.get("id"))}</code>',
+            f'📦 وضعیت: {esc(z.get("status"))}',
+            f'🌐 پلن: {esc(z.get("plan")) or "—"}',
+            f'📅 ساخت: {esc(str(z.get("created_on"))[:10])}',
+            f'👤 اکانت: {esc((z.get("account") or {}).get("name")) or "—"}',
+            "",
+            "🖧 نیم‌سرورها:",
+        ]
+        if ns:
+            lines += [f"• <code>{esc(n)}</code>" for n in ns]
+        else:
+            lines.append("• —")
+        kb = self._cf_back_kb(acc, zid)
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _cf_purge(self, chat: int, mid: int) -> None:
+        acc, zid, zname, client = self._cf_zctx(chat)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        try:
+            client.purge_cache(zid)
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطا:\n{esc(e)}",
+                       [[btn("🔙 بازگشت", "zset")]])
+            return
+        self._show(chat, mid, "🧹 کل کش دامنه پاک شد.",
+                   [[btn("🔙 بازگشت", "zset"),
+                     btn("🏠 خانه", "menu")]])
+
+    def _cf_dev_toggle(self, chat: int, mid: int) -> None:
+        acc, zid, zname, client = self._cf_zctx(chat)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        try:
+            cur = client.settings(zid).get("development_mode")
+            new = "off" if cur == "on" else "on"
+            client.set_setting(zid, "development_mode", new)
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطا:\n{esc(e)}",
+                       [[btn("🔙 بازگشت", "zset")]])
+            return
+        self._show(chat, mid,
+                   "🚧 حالت توسعه روشن شد." if new == "on"
+                   else "🚧 حالت توسعه خاموش شد.",
+                   [[btn("🔙 بازگشت", "zset"), btn("🏠 خانه", "menu")]])
+
+    def _cf_zone_pause(self, chat: int, mid: int) -> None:
+        acc, zid, zname, client = self._cf_zctx(chat)
+        if not zid:
+            self._show(chat, mid, "⏳ نشست منقضی شد.", home_kb())
+            return
+        try:
+            z = client.zone(zid)
+            active = z.get("status") == "active"
+            client.set_zone_paused(zid, active)
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطا:\n{esc(e)}",
+                       [[btn("🔙 بازگشت", "zset")]])
+            return
+        self._show(chat, mid,
+                   f'{"⏸️ دامنه متوقف شد." if active else "▶️ دامنه فعال شد."}',
+                   [[btn("🔙 بازگشت", "zset"), btn("🏠 خانه", "menu")]])
+
+    def _cf_record_traffic(self, chat: int, mid: int) -> None:
+        from cfusage import fetch_traffic_counts
+        sess = self._cf_sess(chat)
+        acc, zid, rid = sess.get("acc"), sess.get("zid"), sess.get("rid")
+        if acc is None or not zid or not rid:
+            self._show(chat, mid, "⏳ نشست منقضی شد؛ رکورد را دوباره باز کن.",
+                       home_kb())
+            return
+        try:
+            client = self._cf_client(acc)
+            recs = client.records(zid) or []
+        except (IndexError, CfError) as e:
+            self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}", home_kb())
+            return
+        t = fetch_traffic_counts(self._cf_accs()[acc]["token"], zid, 1)
+        if t.get("need_perm") or t.get("error"):
+            body = ("❌ دسترسی Analytics نیست (Zone → Analytics → Read)."
+                    if t.get("need_perm") else
+                    f'❌ خطا در آمار:\n{esc(t.get("error"))}')
+            self._show(chat, mid, body,
+                       [[btn("🔙 بازگشت", f"cfr:{rid}"),
+                         btn("🏠 خانه", "menu")]])
+            return
+        counts = t.get("counts") or {}
+        r = next((x for x in recs if x.get("id") == rid), None)
+        if not r:
+            self._show(chat, mid, "❌ رکورد پیدا نشد (شاید حذف شده).",
+                       [[btn("🔙 بازگشت", "zones")]])
+            return
+        n = counts.get(str(r.get("name") or "").lower(), 0)
+        traffic = (f'📊 ترافیک امروز: {fa_d(format(n, ","))} کوئری')
+        self._cf_record(chat, mid, acc, zid, rid, traffic=traffic)
+
     def _cf_all_zones(self):
         out = []
         for i, a in enumerate(self._cf_accs()):
@@ -1410,7 +1722,7 @@ class Router:
                          sess.get("pg", 0))
 
     def _cf_record(self, chat: int, mid: int, acc: int, zid: str,
-                   rid: str) -> None:
+                   rid: str, traffic: str = "") -> None:
         try:
             client = self._cf_client(acc)
             recs = client.records(zid) or []
@@ -1424,11 +1736,15 @@ class Router:
             self._show(chat, mid,
                        "❌ رکورد پیدا نشد (شاید حذف شده). از لیست دوباره بازش کن.")
             return
+        sess = self._cf_sess(chat)
+        sess.update(acc=acc, zid=zid, rid=rid)
+        self._cf_save_sess(chat, sess)
         faved = any(f.get("rid") == rid for f in self._favs())
         text = (f"✏️ ویرایش رکورد\n\n"
                 f"📛 نام: <code>{esc(r.get('name'))}</code>\n"
                 f"💡 مقدار: <code>{esc(r.get('content'))}</code>\n"
-                f"📁 دامنه: <code>{esc(zname)}</code>")
+                f"📁 دامنه: <code>{esc(zname)}</code>"
+                + (f"\n{traffic}" if traffic else ""))
         tbtn = (btn(f'🏷 نوع: {r.get("type")}', f"ct:{rid}")
                 if r.get("type") in ("A", "CNAME")
                 else btn("🔄 تغییر نوع", f"ct:{rid}"))

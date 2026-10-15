@@ -56,3 +56,29 @@ class Cf:
         body.update(changes)
         return self._req("PUT", f"/zones/{zone_id}/dns_records/{rec.get('id')}",
                          body)
+
+    def zone(self, zone_id: str) -> dict:
+        return self._req("GET", f"/zones/{zone_id}") or {}
+
+    def settings(self, zone_id: str) -> dict:
+        out = {}
+        for s in self._req("GET", f"/zones/{zone_id}/settings") or []:
+            out[str(s.get("id"))] = s.get("value")
+        return out
+
+    def set_setting(self, zone_id: str, key: str, value) -> dict:
+        return self._req("PATCH", f"/zones/{zone_id}/settings/{key}",
+                         {"value": value})
+
+    def set_zone_paused(self, zone_id: str, paused: bool) -> dict:
+        return self._req("PATCH", f"/zones/{zone_id}",
+                         {"paused": bool(paused)})
+
+    def purge_cache(self, zone_id: str) -> dict:
+        return self._req("POST", f"/zones/{zone_id}/purge_cache",
+                         {"purge_everything": True})
+
+    def add_cname(self, zone_id: str, name: str, content: str,
+                  ttl: int = 1) -> dict:
+        return self.add_record(zone_id, "CNAME", name, content, ttl=ttl,
+                               proxied=False)
