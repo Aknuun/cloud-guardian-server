@@ -441,8 +441,8 @@ class Router:
         elif data in ("noop",
                       "fmail",
                       "zmail", "ztraf", "cref",
-                      "srvsub", "srvpw",
-                      "srvupd", "srvedit"):
+                      "srvsub",
+                      "srvedit_sentinel"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
         elif data == "sslm":
@@ -576,6 +576,31 @@ class Router:
                                 600)
             self._show(chat, mid, "🌐 هاست یا آی‌پی سرور را بفرستید:",
                        [[btn("🔙 انصراف", "srv")]])
+        elif data.startswith("srvupd:"):
+            sid = data[7:]
+            _, s = self._srv_get(sid)
+            self._show(chat, mid,
+                       f'⚠️ آپدیت و آپگرید روی «{esc(s.get("name")) if s else "؟"}» اجرا شود؟',
+                       [[btn("✅ بله", f"srvupdgo:{sid}"),
+                         btn("❌ انصراف", f"srvopen:{sid}")]])
+        elif data.startswith("srvupdgo:"):
+            self._srv_update(chat, mid, data[9:])
+        elif data.startswith("srvedit:"):
+            self._srv_edit_menu(chat, mid, data[8:])
+        elif data.startswith("srvedith:"):
+            p = data.split(":", 2)
+            self._srv_edit_field(chat, mid, p[1], p[2])
+        elif data == "srvpw":
+            self._srv_pw_home(chat, mid)
+        elif data == "srvpwadd":
+            self.store.put_json(f"pend:{chat}", {"type": "srv_pw_add"}, 900)
+            self._show(chat, mid,
+                       "🔑 رمز عبور SSH موردنظر را بفرستید تا ذخیره شود:",
+                       [[btn("⬅️ انصراف", "srvpw")]])
+        elif data.startswith("srvpwdel:"):
+            self._srv_pw_del_ask(chat, mid, data[9:])
+        elif data.startswith("srvpwdely:"):
+            self._srv_pw_del_do(chat, mid, data[10:])
         elif data == "srvdel":
             lst = self._srv_list()
             kb = [[btn(f'🗑 {s.get("name")}', f'srvdelx:{s.get("id")}')]
@@ -2559,6 +2584,49 @@ class Router:
             self.store.delete(f"pend:{chat}")
             self.bot.send(chat, f"✅ {n} سرور اضافه شد.")
             self._srv_home(chat, 0)
+        elif pend.get("type") == "srv_edit":
+            field = pend.get("field")
+            sid = pend.get("srv")
+            lst = self._srv_list()
+            s = next((x for x in lst if str(x.get("id")) == str(sid)), None)
+            if not s:
+                self.store.delete(f"pend:{chat}")
+                self.bot.send(chat, "❌ سرور پیدا نشد.")
+                return
+            val = text.strip()
+            if field == "name":
+                s["name"] = val or s.get("name")
+            elif field == "host":
+                host, port = val, s.get("port") or 22
+                if ":" in val and val.rsplit(":", 1)[1].isdigit():
+                    host, port = val.rsplit(":", 1)
+                    port = int(port)
+                s["host"] = host
+                s["port"] = port
+            elif field == "user":
+                s["user"] = val or "root"
+            elif field == "auth":
+                if val == "-":
+                    pass
+                elif val.startswith("-"):
+                    s["auth"] = "key"
+                    s["secret"] = text
+                else:
+                    s["auth"] = "pass"
+                    s["secret"] = val
+            elif field == "note":
+                s["note"] = "" if val == "-" else val
+            self.store.put_json("srv_list", lst)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ ذخیره شد.")
+            self._srv_open(chat, 0, sid)
+        elif pend.get("type") == "srv_pw_add":
+            pws = self._srv_pw_list()
+            pws.append(text.strip())
+            self.store.put_json("srv_passwords", pws)
+            self.store.delete(f"pend:{chat}")
+            self.bot.send(chat, "✅ رمز ذخیره شد.")
+            self._srv_pw_home(chat, 0)
         elif pend.get("type") == "srvmon_num":
             from monitors import srvmon_cfg, srvmon_save
             try:
@@ -3509,6 +3577,105 @@ class Router:
                              if str(s.get("id")) != str(sid)])
         self.bot.send(chat, "✅ حذف شد.")
         self._srv_home(chat, 0)
+
+    def _srv_update(self, chat: int, mid: int, sid: str) -> None:
+        _, s = self._srv_get(sid)
+        if not s:
+            self._show(chat, mid, "❌ سرور پیدا نشد.", home_kb())
+            return
+        self._show(chat, mid, "⏳ شروع آپدیت…")
+
+        def _work():
+            from sshop import run_cmd
+            cmd = ("export DEBIAN_FRONTEND=noninteractive; "
+                   "sudo apt-get update -y && sudo apt-get upgrade -y")
+            r = run_cmd(s.get("host"), s.get("user") or "root",
+                        s.get("secret") or "", s.get("port") or 22, cmd,
+                        timeout=300)
+            if not r["ok"]:
+                self.bot.send(chat, f'❌ خطا: <code>{esc(r["err"])}</code>',
+                              [[btn("🔙 بازگشت", f"srvopen:{sid}"),
+                                btn("🏠 خانه", "menu")]])
+                return
+            out = str(r.get("out") or "")[-1200:]
+            self.bot.send(chat,
+                          "✅ آپدیت و آپگرید انجام شد.\n\n📄 انتهای خروجی:\n"
+                          f"<pre>{esc(out)}</pre>",
+                          [[btn("🔙 بازگشت", f"srvopen:{sid}"),
+                            btn("🏠 خانه", "menu")]])
+        import threading
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _srv_edit_menu(self, chat: int, mid: int, sid: str) -> None:
+        _, s = self._srv_get(sid)
+        if not s:
+            self._show(chat, mid, "❌ سرور پیدا نشد.", home_kb())
+            return
+        kb = [[btn("✏️ نام", f"srvedith:{sid}:name"),
+               btn("🌐 هاست/پورت", f"srvedith:{sid}:host")],
+              [btn("👤 کاربر", f"srvedith:{sid}:user"),
+               btn("🔐 رمز/کلید", f"srvedith:{sid}:auth")],
+              [btn("📝 یادداشت", f"srvedith:{sid}:note")],
+              [btn("🔙 بازگشت", f"srvopen:{sid}"),
+               btn("🏠 خانه", "menu")]]
+        self._show(chat, mid, f'✏️ ویرایش «{esc(s.get("name"))}» — کدام مورد؟', kb)
+
+    def _srv_edit_field(self, chat: int, mid: int, sid: str,
+                        field: str) -> None:
+        prompts = {
+            "name": "✏️ نام جدید سرور را بفرستید:",
+            "host": "🌐 هاست جدید را بفرستید (مثل 1.2.3.4 یا domain.com:2222 — پورت با : جدا می‌شود):",
+            "user": "👤 نام کاربر جدید را بفرستید (پیش‌فرض root):",
+            "auth": "🔐 رمز عبور جدید را بفرستید؛ یا کلید خصوصی را با - شروع کنید (مثل -----BEGIN...)؛ یا - بفرستید تا بدون تغییر بماند:",
+            "note": "📝 یادداشت جدید را بفرستید (- برای حذف):",
+        }
+        self.store.put_json(f"pend:{chat}",
+                            {"type": "srv_edit", "srv": sid,
+                             "field": field}, 900)
+        self._show(chat, mid, prompts.get(field, "مقدار جدید را بفرستید:"),
+                   [[btn("⬅️ انصراف", f"srvopen:{sid}")]])
+
+    def _srv_pw_list(self) -> list:
+        pws = self.store.get_json("srv_passwords", [])
+        return pws if isinstance(pws, list) else []
+
+    def _srv_pw_home(self, chat: int, mid: int = 0) -> None:
+        pws = self._srv_pw_list()
+        lines = ["🔑 رمزهای ذخیره‌شده", ""]
+        if not pws:
+            lines.append("📭 رمزی ذخیره نشده.\nاز دکمهٔ زیر رمزهای پرتکرار SSH را ذخیره کن تا در افزودن سرور سریع انتخاب شوند.")
+        else:
+            lines.append(f"{len(pws)} رمز ذخیره شده (ماسک‌شده):")
+            for i, p in enumerate(pws):
+                s = str(p)
+                masked = (s[:2] + "…" + s[-2:]) if len(s) > 4 else "…"
+                lines.append(f"{i + 1}) <code>{esc(masked)}</code>")
+        kb = [[btn("➕ افزودن رمز", "srvpwadd")]]
+        for i in range(0, len(pws), 3):
+            kb.append([btn(f"🗑 {j + 1}", f"srvpwdel:{j}")
+                       for j in range(i, min(i + 3, len(pws)))])
+        kb.append([btn("🔙 بازگشت", "srv"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines), kb)
+
+    def _srv_pw_del_ask(self, chat: int, mid: int, idx: str) -> None:
+        try:
+            i = int(idx)
+            self._srv_pw_list()[i]
+        except (ValueError, IndexError):
+            self._srv_pw_home(chat, mid)
+            return
+        self._show(chat, mid, f"⚠️ «رمز {i + 1}» حذف شود؟",
+                   [[btn("✅ بله، حذف کن", f"srvpwdely:{i}"),
+                     btn("❌ انصراف", "srvpw")]])
+
+    def _srv_pw_del_do(self, chat: int, mid: int, idx: str) -> None:
+        pws = self._srv_pw_list()
+        try:
+            pws.pop(int(idx))
+        except (ValueError, IndexError):
+            pass
+        self.store.put_json("srv_passwords", pws)
+        self._srv_pw_home(chat, mid)
 
     def _srvmon_run(self, chat: int) -> None:
         from monitors import run_srvmon
