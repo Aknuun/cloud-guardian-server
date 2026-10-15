@@ -440,9 +440,8 @@ class Router:
                            [[btn("❌ انصراف", "zones")]])
         elif data in ("noop",
                       "fmail",
-                      "zmail", "ztraf", "cref",
-                      "srvsub",
-                      "srvedit_sentinel"):
+                      "zmail", "ztraf",
+                      "srvsub"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
         elif data == "sslm":
@@ -469,6 +468,8 @@ class Router:
             self._cf_zone_pause(chat, mid)
         elif data == "rtraf":
             self._cf_record_traffic(chat, mid)
+        elif data == "cref":
+            self._cf_cname_refs(chat, mid)
         elif data == "ssdma":
             self.store.put_json(f"pend:{chat}", {"type": "ssl_host"}, 600)
             self._show(chat, mid,
@@ -1503,6 +1504,51 @@ class Router:
         n = counts.get(str(r.get("name") or "").lower(), 0)
         traffic = (f'📊 ترافیک امروز: {fa_d(format(n, ","))} کوئری')
         self._cf_record(chat, mid, acc, zid, rid, traffic=traffic)
+
+    def _cf_cname_refs(self, chat: int, mid: int) -> None:
+        sess = self._cf_sess(chat)
+        acc, zid, rid = sess.get("acc"), sess.get("zid"), sess.get("rid")
+        if acc is None or not zid or not rid:
+            self._show(chat, mid, "⏳ نشست منقضی شد؛ رکورد را دوباره باز کن.",
+                       home_kb())
+            return
+        try:
+            recs = self._cf_client(acc).records(zid) or []
+        except (IndexError, CfError) as e:
+            self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}", home_kb())
+            return
+        r = next((x for x in recs if x.get("id") == rid), None)
+        if not r:
+            self._show(chat, mid, "❌ رکورد پیدا نشد.",
+                       [[btn("🔙 بازگشت", "zones")]])
+            return
+        target = str(r.get("name") or "").rstrip(".").lower()
+        self._show(chat, mid, "⏳ در حال بررسی دامنه‌ها…",
+                   [[btn("🔙 بازگشت", f"cfr:{rid}")]])
+        refs = []
+        for z in self._cf_all_zones():
+            try:
+                zrecs = self._cf_client(z["_acc"]).records(z["id"]) or []
+            except (IndexError, CfError):
+                continue
+            for x in zrecs:
+                if str(x.get("type") or "").upper() != "CNAME":
+                    continue
+                if str(x.get("content") or "").rstrip(".").lower() == target:
+                    refs.append({"name": x.get("name"),
+                                 "zone_name": z.get("name")})
+        lines = ["🔗 CNAMEهای وارده", "", f"🎯 رکورد: <code>{esc(target)}</code>",
+                 ""]
+        if not refs:
+            lines.append("📭 هیچ دامنه/ساب‌دامین‌ای به این رکورد CNAME نکرده است.")
+        else:
+            lines.append(f"📊 تعداد: {len(refs)}")
+            lines.append("")
+            for i, f in enumerate(refs):
+                lines.append(f'{i + 1}) ☁️ <code>{esc(f["name"])}</code> — '
+                             f'<code>{esc(f["zone_name"])}</code>')
+        self._show(chat, mid, "\n".join(lines)[:3500],
+                   [[btn("🔙 بازگشت", f"cfr:{rid}"), btn("🏠 خانه", "menu")]])
 
     def _cf_all_zones(self):
         out = []
