@@ -399,7 +399,7 @@ class Router:
                       "fmail",
                       "zset", "zmail", "ztraf", "cref", "rtraf",
                       "srvsub", "srvpw",
-                      "srvstats", "srvupd", "srvedit"):
+                      "srvupd", "srvedit"):
             if data != "noop":
                 self._soon(cb.get("id", ""))
         elif data == "sslm":
