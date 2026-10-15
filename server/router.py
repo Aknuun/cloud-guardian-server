@@ -396,8 +396,8 @@ class Router:
                 self._show(chat, mid, "🔍 بخشی از نام یا مقدار رکورد را بفرستید:",
                            [[btn("❌ انصراف", "zones")]])
         elif data in ("noop",
-                      "fmail", "lb",
-                      "zset", "selmode", "zmail", "ztraf", "cref", "rtraf",
+                      "fmail",
+                      "zset", "zmail", "ztraf", "cref", "rtraf",
                       "srvsub", "srvpw",
                       "srvstats", "srvupd", "srvedit"):
             if data != "noop":
@@ -945,6 +945,25 @@ class Router:
                 self._show(chat, mid,
                            f"➕ ساخت رکورد {rtype}\n\nنام رکورد را بفرستید (مثلاً www یا @):",
                            [[btn("⬅️ انصراف", f"cfz:{acc}:{zid}")]])
+        elif data == "lb":
+            self._lb_zones(chat, mid, "all", 0)
+        elif data.startswith("lbzf:"):
+            p = data.split(":")
+            self._lb_zones(chat, mid, p[1], int(p[2]) if len(p) > 2
+                           and p[2].lstrip("-").isdigit() else 0)
+        elif data.startswith("lbacc:"):
+            self._lb_zones(chat, mid, data[6:], 0)
+        elif data.startswith("lbzp:"):
+            p = data.split(":")
+            self._lb_zone_groups(chat, mid, int(p[1]), p[2],
+                                 int(p[3]) if len(p) > 3 else 0)
+        elif data.startswith("lbz:"):
+            p = data.split(":")
+            self._lb_zone_groups(chat, mid, int(p[1]), p[2],
+                                 int(p[3]) if len(p) > 3 else 0)
+        elif data.startswith("lbgopen:"):
+            p = data.split(":", 3)
+            self._lb_open_group(chat, mid, int(p[1]), p[2], p[3])
         elif data.startswith("lbs:"):
             self._lb_settings(chat, mid, data[4:])
         elif data.startswith("lbsr:"):
@@ -3665,6 +3684,154 @@ class Router:
         self._show(chat, mid, txt, kb)
 
     # ---------- Load balancer ----------
+
+    LB_PAGE = 20
+    LB_GROUPS_PAGE = 30
+
+    def _lb_zones(self, chat: int, mid: int = 0, flt: str = "all",
+                  pg: int = 0) -> None:
+        accs = self._cf_accs()
+        allz = self._cf_all_zones()
+        if not allz:
+            self._show(chat, mid, "⚖️ لود بالانسر IP\n\n📭 دامنه‌ای پیدا نشد.",
+                       [[btn("🏠 خانه", "menu")]])
+            return
+        zones = allz if flt == "all" else \
+            [z for z in allz if z["_acc"] == int(flt)]
+        pages = max(1, (len(zones) + self.LB_PAGE - 1) // self.LB_PAGE)
+        pg = max(0, min(pg, pages - 1))
+        rows = [btn(f'⚖️ {z["name"]}', f'lbz:{z["_acc"]}:{z["id"]}')
+                for z in zones[pg * self.LB_PAGE:(pg + 1) * self.LB_PAGE]]
+        kb = grid2(rows)
+        kb.append([btn("📁 ✅ همه اکانت‌ها" if flt == "all"
+                       else "📁 همه اکانت‌ها", "lbzf:all:0")])
+        if len(accs) > 1:
+            kb.extend(grid3([
+                btn(f'{"👤 ✅ " if flt == str(j) else "👤 "}{a["name"]}',
+                    f"lbzf:{j}:0") for j, a in enumerate(accs)]))
+        if pages > 1:
+            nav = []
+            nav.append(btn("⬅️", f"lbzf:{flt}:{pg - 1}") if pg > 0
+                       else EMPTY_BTN)
+            nav.append(btn("🏠 خانه", "menu"))
+            nav.append(btn("➡️", f"lbzf:{flt}:{pg + 1}")
+                       if pg < pages - 1 else EMPTY_BTN)
+            kb.append(nav)
+        else:
+            kb.append([btn("🏠 خانه", "menu")])
+        label = "همه" if flt == "all" else \
+            (accs[int(flt)]["name"] if flt.isdigit()
+             and int(flt) < len(accs) else "؟")
+        title = f"⚖️ لود بالانسر IP — {label}"
+        if pages > 1:
+            title += f" — صفحه {pg + 1} از {pages}"
+        title += ("\n\nروی دامنه کلیک کن تا ساب‌هاش رو ببینی.\n\n"
+                  "• «بالانسر۱/۲/...» وزن هر آی‌پی است (سهمش از ترافیک)\n"
+                  "• «🛟 زاپاس» آی‌پی/CNAME رزرو است؛ اگر اصلی فیلتر شد با یک دکمه جایگزین می‌شود")
+        self._show(chat, mid, title, kb)
+
+    def _lb_zone_groups(self, chat: int, mid: int, acc: int, zid: str,
+                        pg: int = 0) -> None:
+        from lb import get_cfg
+        accs = self._cf_accs()
+        if acc < 0 or acc >= len(accs):
+            self._show(chat, mid, "❌ دامنه پیدا نشد.",
+                       [[btn("🔙 بازگشت", "lb"), btn("🏠 خانه", "menu")]])
+            return
+        try:
+            client = self._cf_client(acc)
+            recs = client.records(zid) or []
+            zone = next((z for z in client.zones() or []
+                         if z.get("id") == zid), None)
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}",
+                       [[btn("🔙 بازگشت", "lb")]])
+            return
+        if not zone:
+            self._show(chat, mid, "❌ دامنه پیدا نشد.",
+                       [[btn("🔙 بازگشت", "lb"), btn("🏠 خانه", "menu")]])
+            return
+        zname = str(zone["name"])
+        groups: dict = {}
+        for r in recs:
+            if str(r.get("type") or "").upper() not in ("A", "AAAA", "CNAME"):
+                continue
+            groups.setdefault(str(r.get("name") or ""), []).append(r)
+        names = sorted(groups)
+        total = sum(len(groups[n]) for n in names)
+        pages = max(1, (len(names) + self.LB_GROUPS_PAGE - 1)
+                    // self.LB_GROUPS_PAGE)
+        pg = max(0, min(pg, pages - 1))
+        slice_ = names[pg * self.LB_GROUPS_PAGE:(pg + 1) * self.LB_GROUPS_PAGE]
+        lines = [f"⚖️ لود بالانسر IP — {esc(zname)}",
+                 f"📦 {len(names)} ساب‌دامین، {total} رکورد فعال", ""]
+        kb = []
+        if not names:
+            lines.append("📭 هنوز لود بالانسری تعریف نشده.")
+        else:
+            for name in slice_:
+                g = groups[name]
+                short = "@" if name == zname else \
+                    (name[:-(len(zname) + 1)]
+                     if name.endswith("." + zname) else name)
+                disabled = 0
+                try:
+                    cfg = get_cfg(self.store, f"lb:cf:{zid}:{name}")
+                    disabled = len(cfg.get("disabled") or [])
+                except Exception:
+                    pass
+                lines.append(f"{short} — {len(g)} رکورد"
+                             + (f" (+{disabled} غیرفعال)" if disabled else ""))
+            for i in range(0, len(slice_), 3):
+                row = []
+                for j in range(i, min(i + 3, len(slice_))):
+                    name = slice_[j]
+                    short = "@" if name == zname else \
+                        (name[:-(len(zname) + 1)]
+                         if name.endswith("." + zname) else name)
+                    label = short[:15] + "…" if len(short) > 16 else short
+                    idx = pg * self.LB_GROUPS_PAGE + j
+                    row.append(btn(label, f"lbgopen:{acc}:{zid}:{idx}",
+                                   "plain"))
+                kb.extend([row])
+            if pages > 1:
+                lines += ["", f"صفحه {pg + 1} از {pages}"]
+        if pages > 1:
+            nav = []
+            nav.append(btn("⬅️", f"lbzp:{acc}:{zid}:{pg - 1}") if pg > 0
+                       else EMPTY_BTN)
+            nav.append(btn("➡️", f"lbzp:{acc}:{zid}:{pg + 1}")
+                       if pg < pages - 1 else EMPTY_BTN)
+            kb.append(nav)
+        kb.append([btn("🔙 بازگشت", "lb"), btn("🏠 خانه", "menu")])
+        self._show(chat, mid, "\n".join(lines)[:3500], kb)
+
+    def _lb_open_group(self, chat: int, mid: int, acc: int, zid: str,
+                       idx: str) -> None:
+        accs = self._cf_accs()
+        if acc < 0 or acc >= len(accs):
+            self._show(chat, mid, "❌ دامنه پیدا نشد.",
+                       [[btn("🔙 بازگشت", "lb")]])
+            return
+        try:
+            client = self._cf_client(acc)
+            recs = client.records(zid) or []
+        except CfError as e:
+            self._show(chat, mid, f"❌ خطای کلادفلر: {esc(e)}",
+                       [[btn("🔙 بازگشت", "lb")]])
+            return
+        names = sorted({str(r.get("name") or "") for r in recs
+                        if str(r.get("type") or "").upper()
+                        in ("A", "AAAA", "CNAME")})
+        try:
+            name = names[int(idx)]
+        except (ValueError, IndexError):
+            self._show(chat, mid, "❌ پیدا نشد.", [[btn("🔙 بازگشت", "lb")]])
+            return
+        gid = f"lb:cf:{zid}:{name}"
+        self.store.put_json(f"lbg:{gid}",
+                            {"acc": acc, "zid": zid, "name": name}, 86400)
+        self._lb_render(chat, mid, gid)
 
     def _lb_group(self, acc: int, zid: str, name: str):
         from lb import get_cfg, key_for
