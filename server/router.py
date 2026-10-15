@@ -389,7 +389,7 @@ class Router:
                            [[btn("❌ انصراف", "zones")]])
         elif data in ("noop",
                       "dommon", "fmail", "lb",
-                      "zset", "selmode", "zmail", "ztraf", "cref", "rtraf",
+                      "zset", "zmail", "ztraf", "cref", "rtraf",
                       "srvsub", "srvimport", "srvpw",
                       "srvstats", "srvupd", "srvedit"):
             if data != "noop":
